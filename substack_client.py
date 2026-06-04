@@ -842,28 +842,46 @@ class SubstackClient:
 
     # --- Drafts ---
 
-    def get_drafts(self) -> List[SubstackDraft]:
-        """Get all drafts"""
+    def _drafts_envelope(self) -> List[Dict]:
+        """Raw items from /drafts. 2026-05: this endpoint now returns
+        {"posts": [...], "hasMore": ..., "nextCursor": ...} instead of a bare
+        list, AND the "posts" array includes ALREADY-PUBLISHED posts (each
+        carries is_published). Accept both shapes; callers filter by publish
+        state. (TODO: paginate via nextCursor when hasMore — currently first
+        page only.)"""
         r = self._get(self.pub_base, "/drafts")
-        # 2026-05: /api/v1/drafts now returns
-        #   {"posts": [...], "hasMore": ..., "nextCursor": ...}
-        # instead of a bare list. Accept both shapes for forward/backward compat.
         if isinstance(r, dict):
-            items = r.get("posts", [])
-        elif isinstance(r, list):
-            items = r
-        else:
-            items = []
-        drafts = []
-        for d in items:
-            drafts.append(SubstackDraft(
-                id=d["id"],
-                title=d.get("draft_title", ""),
-                subtitle=d.get("draft_subtitle", ""),
-                audience=d.get("audience", "everyone"),
-                cover_image=d.get("cover_image", "")
-            ))
-        return drafts
+            return r.get("posts", [])
+        if isinstance(r, list):
+            return r
+        return []
+
+    def _to_draft(self, d: Dict) -> SubstackDraft:
+        return SubstackDraft(
+            id=d["id"],
+            title=d.get("draft_title", "") or d.get("title", ""),
+            subtitle=d.get("draft_subtitle", ""),
+            audience=d.get("audience", "everyone"),
+            cover_image=d.get("cover_image", "")
+        )
+
+    def get_drafts(self) -> List[SubstackDraft]:
+        """Get ACTUAL drafts (unpublished only).
+
+        2026-05 fix: the /drafts endpoint's "posts" array now also contains
+        published posts (is_published=True). Returning those as 'drafts'
+        mislabels live posts and risks re-'publishing' something already out.
+        So we filter to is_published falsey here. Use get_published_posts()
+        for the live ones.
+        """
+        return [self._to_draft(d) for d in self._drafts_envelope()
+                if not d.get("is_published")]
+
+    def get_published_posts(self) -> List[SubstackDraft]:
+        """Published posts surfaced by the /drafts envelope (is_published=True).
+        Note: first page only until pagination is added."""
+        return [self._to_draft(d) for d in self._drafts_envelope()
+                if d.get("is_published")]
 
     def get_draft(self, draft_id: int) -> Dict:
         """Get full draft details"""
