@@ -195,6 +195,35 @@ async def list_tools() -> list[types.Tool]:
             }
         ),
         types.Tool(
+            name="substack_get_comments",
+            description="Get the comment thread for a post (by post_id).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "post_id": {"type": "integer", "description": "The post id to read comments from"}
+                },
+                "required": ["post_id"]
+            }
+        ),
+        types.Tool(
+            name="substack_get_all_comments",
+            description="Sweep comments across ALL published posts, tagged with post title/id. Use to find fan comments needing a reply.",
+            inputSchema={"type": "object", "properties": {}}
+        ),
+        types.Tool(
+            name="substack_reply_to_comment",
+            description="Reply to a comment (or post a top-level comment). OUTWARD-FACING: posts publicly as you. Omit parent_id for a top-level comment; set it to reply to a specific comment.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "post_id": {"type": "integer", "description": "The post id the comment lives on"},
+                    "body": {"type": "string", "description": "Your reply text"},
+                    "parent_id": {"type": "integer", "description": "Comment id to reply to (omit for top-level)"}
+                },
+                "required": ["post_id", "body"]
+            }
+        ),
+        types.Tool(
             name="substack_live_blog_start",
             description="Start a live blogging session",
             inputSchema={
@@ -374,6 +403,44 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             limit = arguments.get("limit", 10)
             posts = client.get_archive(limit=limit)
             result = {"posts": [{"id": p.id, "title": p.title, "url": p.canonical_url, "date": p.post_date} for p in posts]}
+
+        elif name == "substack_get_comments":
+            post_id = arguments["post_id"]
+            comments = client.get_comments(post_id)
+            def _fmt(cm):
+                return {
+                    "id": cm.get("id"),
+                    "name": cm.get("name"),
+                    "handle": cm.get("handle"),
+                    "user_id": cm.get("user_id"),
+                    "date": cm.get("date"),
+                    "body": cm.get("body"),
+                    "replies": [_fmt(ch) for ch in (cm.get("children") or [])],
+                }
+            result = {"post_id": post_id, "comments": [_fmt(c) for c in comments]}
+
+        elif name == "substack_get_all_comments":
+            rows = client.get_all_comments()
+            result = {"total": len(rows), "items": [
+                {
+                    "post_id": r["post_id"],
+                    "post_title": r["post_title"],
+                    "comment_id": r["comment"].get("id"),
+                    "name": r["comment"].get("name"),
+                    "handle": r["comment"].get("handle"),
+                    "user_id": r["comment"].get("user_id"),
+                    "date": r["comment"].get("date"),
+                    "body": r["comment"].get("body"),
+                } for r in rows
+            ]}
+
+        elif name == "substack_reply_to_comment":
+            post_id = arguments["post_id"]
+            body = arguments["body"]
+            parent_id = arguments.get("parent_id")
+            reply = client.reply_to_comment(post_id, body, parent_id)
+            result = {"posted": True, "post_id": post_id, "parent_id": parent_id,
+                      "comment_id": reply.get("id") if isinstance(reply, dict) else None}
 
         elif name == "substack_live_blog_start":
             title = arguments.get("title", f"Live Blog - {datetime.now().strftime('%Y-%m-%d')}")

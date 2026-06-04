@@ -983,6 +983,45 @@ class SubstackClient:
 
     # --- Notes (Short-form) ---
 
+    # --- Comments (read + reply) ---
+
+    def get_comments(self, post_id: int) -> List[Dict]:
+        """Get the comment thread for a post. Each comment dict carries id,
+        body, name, handle, user_id, date, and nested children/replies."""
+        r = self._get(self.pub_base, f"/post/{post_id}/comments")
+        if isinstance(r, dict):
+            return r.get("comments", [])
+        return r if isinstance(r, list) else []
+
+    def get_all_comments(self) -> List[Dict]:
+        """Sweep comments across all published posts, tagged with post context.
+        Returns a flat list of {post_id, post_title, comment} so the caller can
+        triage what needs a reply without scanning each post by hand."""
+        out = []
+        for p in self.get_archive(limit=50):
+            pid = p.id if hasattr(p, "id") else (p.get("id") if isinstance(p, dict) else None)
+            title = getattr(p, "title", None) or (p.get("title") if isinstance(p, dict) else "")
+            if pid is None:
+                continue
+            try:
+                for cm in self.get_comments(pid):
+                    out.append({"post_id": pid, "post_title": title, "comment": cm})
+            except Exception:
+                continue
+        return out
+
+    def reply_to_comment(self, post_id: int, body: str, parent_id: int = None) -> Dict:
+        """Post a comment on a post, or a reply to an existing comment.
+
+        parent_id=None -> top-level comment on the post.
+        parent_id=<comment id> -> threaded reply to that comment.
+
+        OUTWARD-FACING: this posts publicly as the authenticated account. The
+        endpoint mirrors the website's comment-create call.
+        """
+        data = {"body": body, "parent_id": parent_id}
+        return self._post(self.pub_base, f"/post/{post_id}/comment", data)
+
     def get_notes(self, limit: int = 20) -> List[Dict]:
         """Get notes from your feed"""
         r = self._get(self.pub_base, f"/notes?limit={limit}")
