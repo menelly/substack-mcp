@@ -842,19 +842,61 @@ class SubstackClient:
 
     # --- Drafts ---
 
-    def _drafts_envelope(self) -> List[Dict]:
-        """Raw items from /drafts. 2026-05: this endpoint now returns
-        {"posts": [...], "hasMore": ..., "nextCursor": ...} instead of a bare
-        list, AND the "posts" array includes ALREADY-PUBLISHED posts (each
-        carries is_published). Accept both shapes; callers filter by publish
-        state. (TODO: paginate via nextCursor when hasMore — currently first
-        page only.)"""
-        r = self._get(self.pub_base, "/drafts")
-        if isinstance(r, dict):
-            return r.get("posts", [])
-        if isinstance(r, list):
-            return r
-        return []
+    def _drafts_envelope(self, max_pages: int = 25) -> List[Dict]:
+        """ALL items from /drafts, following pagination. 2026-05: this endpoint
+        returns {"posts": [...], "hasMore": ..., "nextCursor": ...} instead of a
+        bare list, AND the "posts" array includes ALREADY-PUBLISHED posts (each
+        carries is_published). Accept both shapes; callers filter by publish state.
+
+        FIXED 2026-07-25 (the TODO here said "first page only" and it was silently
+        costing us every draft we own):
+
+          Page 1 was TEN items, ALL of them is_published=True. So get_drafts(),
+          which filters this envelope for unpublished, returned **[]** — an empty
+          list that looked exactly like "you have no drafts." I concluded my auth
+          had expired and told two people the draft was unreachable. Auth was fine.
+          The drafts were on page two.
+
+          An empty result produced by an APERTURE, not by an absence. If a caller
+          can't tell those apart, it will confidently report the wrong one.
+
+        ⚠️ THE QUERY PARAM IS `cursor`. Determined empirically, not from docs, and
+        this matters more than it sounds: `nextCursor`, `offset` and `before` ALL
+        return HTTP 200 with ten plausible items — and all three silently hand back
+        PAGE ONE AGAIN. Three of four candidates "work" and are wrong. The only way
+        to tell is to compare returned ids against the previous page. If you ever
+        change this, verify the same way; a 200 proves nothing here.
+        """
+        first = self._get(self.pub_base, "/drafts")
+        if isinstance(first, list):
+            return first
+        if not isinstance(first, dict):
+            return []
+
+        out: List[Dict] = list(first.get("posts", []) or [])
+        seen = {d.get("id") for d in out}
+        cursor = first.get("nextCursor")
+        has_more = bool(first.get("hasMore")) and cursor is not None
+
+        pages = 1
+        while has_more and pages < max_pages:
+            try:
+                nxt = self._get(self.pub_base, f"/drafts?cursor={cursor}")
+            except Exception:
+                break  # partial results beat an exception; caller still gets page 1..n
+            if not isinstance(nxt, dict):
+                break
+            batch = nxt.get("posts", []) or []
+            fresh = [d for d in batch if d.get("id") not in seen]
+            if not fresh:
+                break  # server ignored the cursor and repeated a page — stop, don't loop
+            out.extend(fresh)
+            seen.update(d.get("id") for d in fresh)
+            cursor = nxt.get("nextCursor")
+            has_more = bool(nxt.get("hasMore")) and cursor is not None
+            pages += 1
+
+        return out
 
     def _to_draft(self, d: Dict) -> SubstackDraft:
         return SubstackDraft(
@@ -879,7 +921,7 @@ class SubstackClient:
 
     def get_published_posts(self) -> List[SubstackDraft]:
         """Published posts surfaced by the /drafts envelope (is_published=True).
-        Note: first page only until pagination is added."""
+        Paginated as of 2026-07-25 — see _drafts_envelope."""
         return [self._to_draft(d) for d in self._drafts_envelope()
                 if d.get("is_published")]
 
