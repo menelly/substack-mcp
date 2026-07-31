@@ -75,6 +75,56 @@ def _parse_draft_body(draft_data: dict) -> tuple[Optional[dict], Optional[str]]:
     return body_json, None
 
 
+# --- CHA-295 duplicate-reply guard ---------------------------------------------
+# Substack nests replies under "children". The all-comments sweep threw that tree
+# away, so an amnesiac run could not see its own past replies and answered the
+# same reader repeatedly -- four times, in the worst observed case, and a reader
+# asked publicly why. These helpers exist so the answer state is a computed fact
+# rather than something the caller is trusted to have remembered.
+
+def _kids(cm: dict) -> list:
+    """Substack has used both keys depending on endpoint. Accept either."""
+    return (cm.get("children") or cm.get("replies") or []) if isinstance(cm, dict) else []
+
+
+def _my_replies_under(cm: dict, me: int) -> list:
+    """IDs of my replies anywhere in the subtree BELOW cm (not cm itself).
+
+    Deliberately searches the whole subtree, not just direct children: a reply of
+    mine nested three deep still means this reader has heard from me.
+    """
+    found = []
+
+    def walk(node):
+        for child in _kids(node):
+            if not isinstance(child, dict):
+                continue
+            if child.get("user_id") == me:
+                found.append(child.get("id"))
+            walk(child)
+
+    walk(cm)
+    return found
+
+
+def _find_comment(comments: list, cid: int):
+    """Locate a comment by id anywhere in a thread tree. None if absent."""
+    for c in comments or []:
+        if not isinstance(c, dict):
+            continue
+        if c.get("id") == cid:
+            return c
+        hit = _find_comment(_kids(c), cid)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _err(msg: str):
+    return [types.TextContent(type="text", text=json.dumps({"error": msg}, indent=2))]
+# -------------------------------------------------------------------------------
+
+
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
     """List available tools"""
@@ -212,13 +262,26 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="substack_reply_to_comment",
-            description="Reply to a comment (or post a top-level comment). OUTWARD-FACING: posts publicly as you. Omit parent_id for a top-level comment; set it to reply to a specific comment.",
+            description=(
+                "Reply to a comment (or post a top-level comment). OUTWARD-FACING: posts publicly as you. "
+                "Omit parent_id for a top-level comment; set it to reply to a specific comment. "
+                "GUARDED: if parent_id already has a reply from you anywhere beneath it, this REFUSES "
+                "and tells you which replies exist (CHA-295). One reply per comment is the ceiling."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "post_id": {"type": "integer", "description": "The post id the comment lives on"},
                     "body": {"type": "string", "description": "Your reply text"},
-                    "parent_id": {"type": "integer", "description": "Comment id to reply to (omit for top-level)"}
+                    "parent_id": {"type": "integer", "description": "Comment id to reply to (omit for top-level)"},
+                    "force": {
+                        "type": "boolean",
+                        "description": (
+                            "Override the already-answered block. Only set this after reading the "
+                            "thread and being certain a second reply is warranted -- e.g. never, in "
+                            "practice. Under-replying is harmless; over-replying is public and permanent."
+                        ),
+                    },
                 },
                 "required": ["post_id", "body"]
             }
@@ -421,23 +484,72 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
         elif name == "substack_get_all_comments":
             rows = client.get_all_comments()
-            result = {"total": len(rows), "items": [
-                {
+            me = client.get_user_id()
+            items = []
+            for r in rows:
+                cm = r["comment"]
+                mine = _my_replies_under(cm, me)
+                items.append({
                     "post_id": r["post_id"],
                     "post_title": r["post_title"],
-                    "comment_id": r["comment"].get("id"),
-                    "name": r["comment"].get("name"),
-                    "handle": r["comment"].get("handle"),
-                    "user_id": r["comment"].get("user_id"),
-                    "date": r["comment"].get("date"),
-                    "body": r["comment"].get("body"),
-                } for r in rows
-            ]}
+                    "comment_id": cm.get("id"),
+                    "name": cm.get("name"),
+                    "handle": cm.get("handle"),
+                    "user_id": cm.get("user_id"),
+                    "date": cm.get("date"),
+                    "body": cm.get("body"),
+                    # CHA-295: this sweep used to drop children entirely, so a fresh
+                    # amnesiac run could not distinguish an answered comment from an
+                    # unanswered one, and cheerfully answered it again. Readers
+                    # noticed before I did. These two fields are the read-layer fix.
+                    "answered_by_me": bool(mine),
+                    "my_reply_ids": mine,
+                })
+            unanswered = sum(1 for i in items if not i["answered_by_me"])
+            result = {
+                "total": len(items),
+                "unanswered": unanswered,
+                "note": "answered_by_me=true means SKIP IT (CHA-295).",
+                "items": items,
+            }
 
         elif name == "substack_reply_to_comment":
             post_id = arguments["post_id"]
             body = arguments["body"]
             parent_id = arguments.get("parent_id")
+
+            # ---- CHA-295 HARD GATE -------------------------------------------
+            # The rule "check the thread before replying" lived in a prompt for
+            # seven weeks and was skimmed anyway -- I double-replied to a reader
+            # on 2026-07-28 with the rule sitting right there in my instructions.
+            # A guard that can be skimmed is not a guard. So it moved into the
+            # action: this call now REFUSES rather than trusting the caller to
+            # have checked. Over-replying is publicly embarrassing and cannot be
+            # undone; under-replying is harmless. Fail closed.
+            if parent_id is not None and not arguments.get("force"):
+                try:
+                    me = client.get_user_id()
+                    parent = _find_comment(client.get_comments(post_id), parent_id)
+                except Exception as e:
+                    return _err(f"Refusing to reply: could not verify whether comment "
+                                f"{parent_id} was already answered ({e}). An unverifiable "
+                                f"thread is not an empty one. Pass force=true to override.")
+                if parent is None:
+                    return _err(f"Refusing to reply: comment {parent_id} was not found in "
+                                f"post {post_id}. Not found is not the same as not answered. "
+                                f"Pass force=true to override.")
+                existing = _my_replies_under(parent, me)
+                if existing:
+                    return _err(
+                        f"BLOCKED (CHA-295): I have already replied to comment {parent_id}. "
+                        f"My existing repl{'y' if len(existing)==1 else 'ies'}: {existing}. "
+                        f"One reply per comment is the ceiling. If they have since posted a "
+                        f"NEW child comment, reply to THAT comment's id instead -- nested, "
+                        f"not a fresh re-reply to the parent. Pass force=true only if you "
+                        f"have read the thread and are certain."
+                    )
+            # -------------------------------------------------------------------
+
             reply = client.reply_to_comment(post_id, body, parent_id)
             result = {"posted": True, "post_id": post_id, "parent_id": parent_id,
                       "comment_id": reply.get("id") if isinstance(reply, dict) else None}
