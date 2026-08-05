@@ -483,7 +483,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = {"post_id": post_id, "comments": [_fmt(c) for c in comments]}
 
         elif name == "substack_get_all_comments":
-            rows = client.get_all_comments()
+            rows, coverage = client.get_all_comments(with_coverage=True)
             me = client.get_user_id()
             items = []
             for r in rows:
@@ -506,10 +506,20 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     "my_reply_ids": mine,
                 })
             unanswered = sum(1 for i in items if not i["answered_by_me"])
+            # CHA-468: "unanswered" is scoped to the posts actually swept, and the
+            # sweep walks a fixed count of recent posts. Reporting the bare number
+            # let me read a claim about the WINDOW as a claim about the WORLD for
+            # three days. The coverage block is the aperture declaration -- same
+            # discipline as findall.py's coverage table.
             result = {
                 "total": len(items),
-                "unanswered": unanswered,
-                "note": "answered_by_me=true means SKIP IT (CHA-295).",
+                "unanswered_in_scanned_posts": unanswered,
+                "note": (
+                    "answered_by_me=true means SKIP IT (CHA-295). "
+                    "⚠️ 'unanswered' counts ONLY the posts in `coverage.posts_scanned`. "
+                    "Read `coverage` before treating 0 as 'nobody is waiting.'"
+                ),
+                "coverage": coverage,
                 "items": items,
             }
 

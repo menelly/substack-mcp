@@ -1035,22 +1035,68 @@ class SubstackClient:
             return r.get("comments", [])
         return r if isinstance(r, list) else []
 
-    def get_all_comments(self) -> List[Dict]:
-        """Sweep comments across all published posts, tagged with post context.
-        Returns a flat list of {post_id, post_title, comment} so the caller can
-        triage what needs a reply without scanning each post by hand."""
+    ARCHIVE_SWEEP_LIMIT = 50
+
+    def get_all_comments(self, with_coverage: bool = False):
+        """Sweep comments across the MOST RECENT `ARCHIVE_SWEEP_LIMIT` published posts.
+
+        ⚠️ CHA-468, 2026-08-05. This docstring used to say "across **all** published
+        posts." It has never done that. It walks a fixed count, and the archive is
+        larger, so **every new post pushes the oldest one out of comment coverage
+        permanently.** Publishing daily, that is one post lost per day.
+
+        The caller then reported `unanswered: 0` — which is 0 *within the window* —
+        and nothing said so. A reader who comments on an older essay lands outside the
+        horizon and waits forever while the sweep reports zero with total confidence.
+
+        There was a SECOND silent horizon in here too: a post whose comments failed to
+        fetch hit `except Exception: continue` and vanished from the result exactly
+        like a post with no comments. An error and an empty were the same output.
+
+        Both are now REPORTED rather than fixed by widening. A bigger window with no
+        disclosure is the same bug with a later onset.
+
+        with_coverage=True returns (rows, coverage) instead of rows.
+        """
         out = []
-        for p in self.get_archive(limit=50):
+        scanned, failed = [], []
+        posts = self.get_archive(limit=self.ARCHIVE_SWEEP_LIMIT)
+
+        for p in posts:
             pid = p.id if hasattr(p, "id") else (p.get("id") if isinstance(p, dict) else None)
             title = getattr(p, "title", None) or (p.get("title") if isinstance(p, dict) else "")
+            date = getattr(p, "post_date", None) or (p.get("post_date") if isinstance(p, dict) else None)
             if pid is None:
                 continue
             try:
-                for cm in self.get_comments(pid):
-                    out.append({"post_id": pid, "post_title": title, "comment": cm})
-            except Exception:
+                cms = self.get_comments(pid)
+            except Exception as e:
+                # NOT swallowed. An unreadable post is not a post with no comments.
+                failed.append({"post_id": pid, "title": title, "error": f"{type(e).__name__}: {e}"})
                 continue
-        return out
+            scanned.append({"post_id": pid, "title": title, "date": date})
+            for cm in cms:
+                out.append({"post_id": pid, "post_title": title, "comment": cm})
+
+        if not with_coverage:
+            return out
+
+        oldest = scanned[-1] if scanned else None
+        coverage = {
+            "posts_scanned": len(scanned),
+            "posts_failed_to_fetch": len(failed),
+            "failures": failed,
+            "sweep_limit": self.ARCHIVE_SWEEP_LIMIT,
+            "archive_page_returned": len(posts),
+            "oldest_post_scanned": oldest,
+            "horizon_note": (
+                "This is a claim about the posts listed above, NOT about the archive. "
+                f"Posts older than '{oldest['title'] if oldest else '(none)'}' were NOT "
+                "examined. A comment left on one of them is invisible to this sweep."
+            ),
+            "window_is_full": len(posts) >= self.ARCHIVE_SWEEP_LIMIT,
+        }
+        return out, coverage
 
     def reply_to_comment(self, post_id: int, body: str, parent_id: int = None) -> Dict:
         """Post a comment on a post, or a reply to an existing comment.
