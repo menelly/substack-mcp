@@ -511,13 +511,27 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             # let me read a claim about the WINDOW as a claim about the WORLD for
             # three days. The coverage block is the aperture declaration -- same
             # discipline as findall.py's coverage table.
+            # CHA-468 tier 2, 2026-08-09: the sweep now enumerates the WHOLE
+            # archive, so the field name has to stop hedging too. Leaving it as
+            # "unanswered_in_scanned_posts" after the scope became complete would
+            # under-claim forever -- and a permanently-hedged number is skimmed
+            # exactly like a permanently-clean one. THE KEY NAME TRACKS THE SCOPE,
+            # in both directions.
+            _whole = bool(coverage.get("archive_complete"))
             result = {
                 "total": len(items),
-                "unanswered_in_scanned_posts": unanswered,
+                ("unanswered_in_archive" if _whole
+                 else "unanswered_in_scanned_posts"): unanswered,
                 "note": (
                     "answered_by_me=true means SKIP IT (CHA-295). "
-                    "⚠️ 'unanswered' counts ONLY the posts in `coverage.posts_scanned`. "
-                    "Read `coverage` before treating 0 as 'nobody is waiting.'"
+                    + ("✅ COMPLETE SWEEP: every published post was enumerated and "
+                       "checked, so this zero IS a claim about the archive."
+                       if _whole else
+                       "⚠️ INCOMPLETE SWEEP — 'unanswered' counts ONLY the posts in "
+                       "`coverage.posts_scanned`. Read `coverage.horizon_note` before "
+                       "treating 0 as 'nobody is waiting.'")
+                    + " Neither version is a claim about ADEQUACY: a comment I "
+                      "answered badly still counts as answered."
                 ),
                 "coverage": coverage,
                 "items": items,

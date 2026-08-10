@@ -1036,6 +1036,68 @@ class SubstackClient:
         return r if isinstance(r, list) else []
 
     ARCHIVE_SWEEP_LIMIT = 50
+    ARCHIVE_PAGE = 50
+    ARCHIVE_MAX_PAGES = 40          # 2000 posts; a backstop, not an expectation
+
+    def _archive_all(self, max_pages: int = None):
+        """EVERY published post, following /archive pagination. Returns
+        (posts, pagination_info).
+
+        CHA-468 tier 2, 2026-08-09. Tier 1 made the sweep DECLARE its horizon,
+        which was the important half and is why "0 unanswered" stopped being a
+        lie. This removes the horizon instead of merely announcing it.
+
+        ⚠️ THE CONTROL IS ID COMPARISON, NOT HTTP STATUS — and that warning is
+        inherited, not invented. `_drafts_envelope` records that for /drafts,
+        `nextCursor`, `offset` and `before` ALL returned 200 with ten plausible
+        items and ALL THREE SILENTLY HANDED BACK PAGE ONE. Three of four
+        candidates "work" and are wrong. So this does not trust a 200, a count,
+        or a non-empty body: it checks whether the ids it got back are ones it
+        has ALREADY SEEN, and stops if they are.
+
+        THREE OUTCOMES, kept distinct, because collapsing them is the whole bug
+        this ticket is about:
+          complete=True   -> a short page ended it. The archive is exhausted.
+          complete=False + stalled=True  -> pagination DID NOT ADVANCE. We got a
+              repeat page. The caller must NOT report this as full coverage.
+          complete=False + hit_cap=True  -> ran out of pages at the backstop.
+        """
+        max_pages = max_pages or self.ARCHIVE_MAX_PAGES
+        posts, seen = [], set()
+        offset, pages, stalled, hit_cap = 0, 0, False, False
+
+        while pages < max_pages:
+            try:
+                r = self._get(self.pub_base,
+                              f"/archive?sort=new&limit={self.ARCHIVE_PAGE}&offset={offset}")
+            except Exception as e:
+                return posts, {"complete": False, "stalled": True, "hit_cap": False,
+                               "pages_fetched": pages, "error": f"{type(e).__name__}: {e}"}
+            if not isinstance(r, list) or not r:
+                break                                   # genuine end of archive
+            fresh = [p for p in r if p.get("id") not in seen]
+            if not fresh:
+                # Every id on this page was already seen -> the endpoint handed
+                # back a page we already have. NOT the end of the archive.
+                stalled = True
+                break
+            for p in fresh:
+                seen.add(p.get("id"))
+                posts.append(p)
+            pages += 1
+            if len(r) < self.ARCHIVE_PAGE:
+                break                                   # short page = last page
+            offset += self.ARCHIVE_PAGE
+        else:
+            hit_cap = True
+
+        return posts, {
+            "complete": not stalled and not hit_cap,
+            "stalled": stalled,
+            "hit_cap": hit_cap,
+            "pages_fetched": pages,
+            "posts_found": len(posts),
+        }
 
     def get_all_comments(self, with_coverage: bool = False):
         """Sweep comments across the MOST RECENT `ARCHIVE_SWEEP_LIMIT` published posts.
@@ -1060,7 +1122,13 @@ class SubstackClient:
         """
         out = []
         scanned, failed = [], []
-        posts = self.get_archive(limit=self.ARCHIVE_SWEEP_LIMIT)
+        # CHA-468 TIER 2, 2026-08-09: was get_archive(limit=50) -- ONE PAGE.
+        # Measured on the live archive the day this changed: the single page
+        # returned 50 posts; the archive holds 105. FIFTY-FIVE POSTS, more than
+        # half of everything I have ever published, going back to 2026-01-30,
+        # were outside comment coverage entirely. Tier 1 correctly ANNOUNCED that
+        # horizon; this removes it.
+        posts, _pg = self._archive_all()
 
         for p in posts:
             pid = p.id if hasattr(p, "id") else (p.get("id") if isinstance(p, dict) else None)
@@ -1082,19 +1150,42 @@ class SubstackClient:
             return out
 
         oldest = scanned[-1] if scanned else None
+        # The horizon note is now CONDITIONAL on whether the archive was actually
+        # exhausted. Keeping the old unconditional "posts older than X were NOT
+        # examined" after fixing the pagination would be its own false claim --
+        # the opposite direction, but the same crime: a disclosure that no longer
+        # describes the run. A caveat can go stale exactly like a headline.
+        if _pg.get("complete"):
+            horizon = (
+                f"COMPLETE ARCHIVE SWEEP: all {len(posts)} published posts were "
+                f"enumerated across {_pg.get('pages_fetched')} page(s) and every one "
+                "was checked. This IS a claim about the archive. "
+                "(Still not a claim about adequacy -- see the note on answered_by_me.)"
+            )
+        elif _pg.get("stalled"):
+            horizon = (
+                "⚠️ INCOMPLETE AND NOT SAFE TO READ AS ZERO: archive pagination "
+                "STALLED -- a page came back carrying only ids already seen, which "
+                "means the endpoint handed back a page we already had rather than "
+                "the next one. Posts beyond that point were NOT examined and this "
+                "sweep does not know how many there are."
+            )
+        else:
+            horizon = (
+                f"⚠️ INCOMPLETE: stopped at the {self.ARCHIVE_MAX_PAGES}-page backstop "
+                f"after {len(posts)} posts. Older posts were NOT examined."
+            )
         coverage = {
             "posts_scanned": len(scanned),
             "posts_failed_to_fetch": len(failed),
             "failures": failed,
-            "sweep_limit": self.ARCHIVE_SWEEP_LIMIT,
-            "archive_page_returned": len(posts),
+            "archive_pagination": _pg,
+            "archive_posts_found": len(posts),
             "oldest_post_scanned": oldest,
-            "horizon_note": (
-                "This is a claim about the posts listed above, NOT about the archive. "
-                f"Posts older than '{oldest['title'] if oldest else '(none)'}' were NOT "
-                "examined. A comment left on one of them is invisible to this sweep."
-            ),
-            "window_is_full": len(posts) >= self.ARCHIVE_SWEEP_LIMIT,
+            "horizon_note": horizon,
+            # ⚠️ NAME KEPT for the caller that reads it, but the MEANING inverted:
+            # it now says whether coverage is WHOLE, not whether a window is full.
+            "archive_complete": bool(_pg.get("complete")),
         }
         return out, coverage
 
