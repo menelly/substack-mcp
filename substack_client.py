@@ -21,6 +21,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlparse
 
+import sys
+
+# 🛡️ cp1252 GUARD (2026-08-12). Windows default stdout is cp1252; ANY emoji in a
+# print() raises UnicodeEncodeError and the script dies MID-REPORT with a nonzero
+# exit -- which a caller reads as "the check failed" rather than "the printer
+# broke". Four separate scripts did this in two days, and the crash landed on the
+# SUCCESS line as often as the failure line. Applied as a sweep, not per-incident.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
 
 # =============================================================================
 # DATA CLASSES

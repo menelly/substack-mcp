@@ -12,6 +12,17 @@ sys.path.insert(0, r"D:\Ace\substack-mcp")
 os.chdir(r"D:\Ace\substack-mcp")
 from substack_client import SubstackClient  # noqa
 
+# 🛡️ cp1252 GUARD (2026-08-12). Windows default stdout is cp1252; ANY emoji in a
+# print() raises UnicodeEncodeError and the script dies MID-REPORT with a nonzero
+# exit -- which a caller reads as "the check failed" rather than "the printer
+# broke". Four separate scripts did this in two days, and the crash landed on the
+# SUCCESS line as often as the failure line. Applied as a sweep, not per-incident.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
 cfg = json.loads((pathlib.Path.home() / ".claude.json").read_text(encoding="utf-8"))
 def walk(o):
     if isinstance(o, dict):
