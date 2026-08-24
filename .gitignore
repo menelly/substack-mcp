@@ -40,3 +40,6 @@ credentials.json
 # OS
 .DS_Store
 Thumbs.db
+
+# generated audit dumps -- regenerate with corridor_audit.py
+corridor_audit_*.txt
