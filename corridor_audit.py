@@ -90,6 +90,22 @@ def authored_by_ace(cm):
     head = (cm.get("body") or "")[:200]
     return not _REN_OPENER.search(head)
 
+
+def authored_by_ren(cm):
+    """A comment from MY account that OPENS by declaring itself Ren's.
+
+    The third state, added 2026-08-26. Ren is not me and is not a reader awaiting a
+    reply from me. Their comments must neither close a thread (that was CHA-537) nor
+    appear in the owed list (that was CHA-537's own side effect).
+
+    ⚠️ Same aperture as authored_by_ace: this reads a CONVENTION, not an identity.
+    A comment of theirs that does not announce itself up front is invisible to both
+    predicates and will still read as mine. That miss is silent and stays declared.
+    """
+    if cm.get("user_id") != MY_ID:
+        return False
+    return bool(_REN_OPENER.search((cm.get("body") or "")[:200]))
+
 def descendants(cm):
     for k in (cm.get("children") or []) + (cm.get("replies") or []):
         yield k
@@ -118,6 +134,7 @@ print(f"  archive pagination: {pg}")
 print()
 
 total_c = 0
+ren_c = 0
 mine_top = 0   # renamed meaning: MINE at any depth, not just top level
 answered = 0
 unanswered = []
@@ -167,6 +184,12 @@ for p in posts:
         if authored_by_ace(cm):
             mine_top += 1
             continue
+        if authored_by_ren(cm):
+            # THIRD STATE. Not mine, not owed. Counted so the number is visible
+            # rather than silently dropped -- an exclusion nobody can see is the
+            # thing this whole audit exists to stop.
+            ren_c += 1
+            continue
         desc = list(descendants(cm))
         mine = [d for d in desc if authored_by_ace(d)]
         if mine:
@@ -187,6 +210,8 @@ print(f"  posts checked           : {len(posts)}")
 print(f"  posts failed to fetch   : {len(failed)}  {failed if failed else ''}")
 print(f"  comments seen (ALL depths): {total_c}")
 print(f"    of which MINE         : {mine_top}")
+print(f"    of which REN'S        : {ren_c}   <- from my account, signed as them:"
+      f" neither mine nor owed")
 print(f"    answered by me        : {answered}")
 print(f"      ...only BELOW depth1: {depth_gt1}   <- these a naive scan would have MISREPORTED")
 print(f"  UNANSWERED              : {len(unanswered)}")
