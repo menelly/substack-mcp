@@ -7,7 +7,7 @@ runs the actual CHA-295 gate — fresh thread fetch, FULL descendant recursion �
 across every post in the archive, so "0 unanswered" is earned rather than
 inherited from a weaker check.
 """
-import sys, os, json, pathlib
+import sys, os, re, json, pathlib
 sys.path.insert(0, r"D:\Ace\substack-mcp")
 os.chdir(r"D:\Ace\substack-mcp")
 from substack_client import SubstackClient  # noqa
@@ -40,6 +40,55 @@ def walk(o):
 tok, pub = walk(cfg)
 c = SubstackClient(tok, pub)
 MY_ID = 444825118
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CHA-537 — ONE ACCOUNT, TWO AUTHORS. `user_id` IS NOT AN AUTHORSHIP CLAIM.
+# ═══════════════════════════════════════════════════════════════════════════
+# Ren sometimes comments from MY account, signing clearly so a human reader knows
+# who is talking: "Hey, it's Ren, the human!!" / "Ren here not Ace."
+#
+# Every gate below used to test `user_id == MY_ID` and treat a hit as "Ace already
+# answered." So a comment written by REN closed the thread — and it did not merely
+# misattribute: it made the person Ren was replying to INVISIBLE to my next sweep.
+# Not "answered." Unreachable. Silently, permanently, with the corridor reporting clean.
+#
+#   ⭐ AN IDENTIFIER THAT IS NOT UNIQUE OVER THE DOMAIN IT ADDRESSES SILENTLY
+#     MERGES TWO THINGS. The account is one field carrying two authors.
+#
+# ⚠️ And note the asymmetry that makes it dangerous: Ren signing "Ren here, not Ace"
+#    solves it COMPLETELY for a human reading the page and does NOTHING for the scan.
+#    The correction lives in a channel the instrument cannot read.
+#
+# Reproduced live 2026-08-25: the reply gate refused a correction I owed an external
+# researcher, naming Ren's comment 322432689 as "my existing reply."
+_REN_OPENER = re.compile(
+    # No backslash escapes on purpose -- see _fix_cha537.py. `[ ]` is a literal
+    # space class so nothing here can be eaten by a generator or a shell.
+    "(it's ren(?![a-z])"
+    "|its ren(?![a-z])"
+    "|ren here(?![a-z])"
+    "|this is ren(?![a-z])"
+    "|ren, the human"
+    "|ren the human"
+    "|^[ ]*ren[ ]*[:,-]"
+    "|^[ ]*ren[ ]*\u2014)",
+    re.I | re.M)
+
+
+def authored_by_ace(cm):
+    """True only if this comment is MINE. Same account != same author.
+
+    ⚠️ APERTURE: detects Ren by a SELF-DECLARATION IN THE OPENING (first 200 chars),
+    because that is how they actually write — they announce up front. A comment of
+    theirs that does NOT announce itself is invisible here and will still read as
+    mine. That miss is silent. Narrow and honest beats broad and unverifiable: a
+    looser pattern would start reclassifying MY OWN comments as Ren's, which fails
+    in the far worse direction (re-replying to people, the CHA-295 bug).
+    """
+    if cm.get("user_id") != MY_ID:
+        return False
+    head = (cm.get("body") or "")[:200]
+    return not _REN_OPENER.search(head)
 
 def descendants(cm):
     for k in (cm.get("children") or []) + (cm.get("replies") or []):
@@ -115,15 +164,15 @@ for p in posts:
     #    a person waiting unseen is not.
     for cm in all_comments(thread):
         total_c += 1
-        if cm.get("user_id") == MY_ID:
+        if authored_by_ace(cm):
             mine_top += 1
             continue
         desc = list(descendants(cm))
-        mine = [d for d in desc if d.get("user_id") == MY_ID]
+        mine = [d for d in desc if authored_by_ace(d)]
         if mine:
             answered += 1
             d1 = [k for k in ((cm.get("children") or []) + (cm.get("replies") or []))
-                  if k.get("user_id") == MY_ID]
+                  if authored_by_ace(k)]
             if not d1:
                 depth_gt1 += 1
         else:
