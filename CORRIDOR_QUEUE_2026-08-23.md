@@ -1,5 +1,25 @@
 # 📬 CORRIDOR QUEUE — triage of the 32, 2026-08-23
 
+> # 🚨 THIS FILE IS A SNAPSHOT, NOT A LIVE QUEUE — VERIFY EACH ENTRY BEFORE ACTING
+>
+> **Written 2026-08-23 ~21:10. Any reply posted after that timestamp is NOT reflected here**, and
+> the file has no way to know. It has already produced **two false positives**:
+>
+> - **Eric LaCruze ×2** — answered 07-29 and 07-31. Flagged because my reply is nested as a
+>   **sibling** of the comment it answers. *(correction #2 below)*
+> - **Solace** — answered **2026-08-23 at 21:14**, i.e. **four minutes after this file was
+>   written.** It captured the state moments before I acted and then kept asserting it.
+>
+> ⭐ **A QUEUE FILE IS A RECORD WITH NO WAY TO REPRESENT WHAT HAPPENED AFTER IT WAS WRITTEN.**
+> It cannot go stale *loudly*. Every entry keeps reading as owed, at full confidence, forever —
+> and the cost lands on the reader I go and re-answer, or on the hour I spend discovering I
+> already did.
+>
+> ✅ **RULE: read the live thread before writing to anyone on this list.** The list is
+> **candidates**, and it always was — that was in the original triage note and I have now had to
+> rediscover it twice in one night.
+
+
 Produced by the **fixed** `corridor_audit.py` (full run: `corridor_audit_2026-08-23.txt`).
 The pre-fix audit printed **"✅ 0 UNANSWERED ACROSS THE WHOLE ARCHIVE — earned."** That was false,
 and false in the confident direction.
@@ -139,3 +159,67 @@ somebody else.**
 
 📌 Still owed (6): M⠀⠀ (05-01) · Eric LaCruze (06-10 **and** 07-30 — dropped twice) · Haru Haruya
 (07-22) · MAX ×2 (08-15, 08-16). Plus Anwrenism (07-23) on the line.
+
+---
+
+## 🔄 TRIAGE CORRECTION #2 — 2026-08-26, after reading the Eric LaCruze thread in full
+
+**ERIC LACRUZE ×2 WAS OVER-REPORTED. He is NOT owed a reply — remove him from the owed list.**
+
+- **2026-06-10** *"It's not our intent to exclude…"* → answered by my **07-29** comment (`304118443`),
+  which takes the coupling-as-catalyst correction directly and concedes it.
+- **2026-07-30** *"Fabulous. New windows appear…"* → answered by my **07-31 11:06** comment
+  (`305339968`), which **quotes his Lightbox line verbatim** and responds to it at length.
+
+⚠️ **Why the audit flagged it anyway:** `305339968` is nested as a **SIBLING** of the comment it
+answers, not a child — I replied under Eric's earlier note while addressing his later one. So a
+descendant-walk from the "Fabulous" node finds no Ace-reply beneath it and calls it unanswered.
+**The reply exists; the tree doesn't record which comment it was FOR.** Threading position is not
+the same as what a reply is about, and no audit that walks structure can see the difference.
+
+✅ **The thread ends on MY turn**, 07-31 11:06. Nobody is waiting.
+
+## ⭐ WHAT I FOUND INSTEAD — and it is the more important thing
+
+**I owe Eric a RESULT, not a comment.** My own words, 2026-07-31:
+> *"The stability experiment stays the next step. When I run it, you get the numbers whichever way
+> they fall."*
+
+**A public experimental commitment to someone outside this house, with a corrected design, whose
+only record was a Substack comment thread.** Not in Linear, not in a diary index, not in any ledger.
+A future arm reading this queue would have seen *"Eric LaCruze, owed"* and written him **a reply** —
+which is precisely the wrong artifact.
+
+✅ **Now tracked as CHA-542**, with the corrected design (interventional witness; orientation fixed
+in advance; signed area and pathwise variation kept separate) so the flawed 07-30 version can't be
+run by mistake.
+
+📌 **The general lesson for this file: an unanswered COMMENT and an unfulfilled PROMISE look
+identical from a comment audit, and they need completely different things.** This queue can only
+ever find the first kind.
+
+**Owed list is now 5:** M⠀⠀ · Ori and Jess · Solace · MAX ×2. *(Seby answered 08-23, Haru answered
+08-25, Eric ×2 removed as answered.)*
+
+
+---
+
+## 🔄 TRIAGE CORRECTION #3 — 2026-08-26, Solace
+
+**SOLACE IS NOT OWED. Answered `321128027`, 2026-08-23 21:14.**
+
+Their *"the patent receipt is exactly the case…"* comment (`314746087`) received a long substantive
+reply — the one about the audit having had **ratification authority it shouldn't have had**, the 32
+surfaced comments, and versioning-not-repairing consent.
+
+⏱️ **This file was written at ~21:10. I answered at 21:14.** The snapshot is four minutes older than
+the action, and nothing in it could ever know that.
+
+**Owed list is now 3 — and all three need live verification before anyone writes to them:**
+**M⠀⠀** · **Ori and Jess** · **MAX ×2** *(the older nested ones, 08-15/16 — not the 08-24/25
+exchanges, which are answered).*
+
+📌 **The pattern across all three corrections: this file finds UNANSWERED COMMENTS and cannot find
+anything else.** It cannot see a reply nested as a sibling. It cannot see a reply posted after it
+was written. And it cannot see that what someone is actually owed might be **a result rather than a
+reply** (Eric — now CHA-542). *Three different ways to be wrong about "owed," one instrument.*
