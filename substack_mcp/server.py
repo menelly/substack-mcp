@@ -157,6 +157,68 @@ def _thread_last_message(cm: dict) -> dict:
     return best
 
 
+def _awaiting_rows(cm: dict, me: int) -> list:
+    """Per-COMMENT triage of one thread. The unit of analysis is a person, not a tree.
+
+    ⚠️ CHA-645 tier 2, 2026-09-15. Two instruments in this repo disagreed about the
+    same archive on the same morning, and BOTH were wrong, in opposite directions:
+
+      * thread-level "is the newest message mine?" (above)      -> 7
+      * corridor_audit.py "every foreign comment, any depth"    -> 17
+
+    The thread rule UNDER-counts: reply anywhere later in the tree and everyone
+    earlier goes quiet. The audit rule OVER-counts: eleven of its seventeen were
+    two other people arguing with EACH OTHER under one post, twelve levels deep,
+    including "Get back to your popcorn." A stranger's fight in my comment section
+    is not a queue.
+
+    And the over-count is not the harmless direction. A list that is two-thirds
+    somebody else's argument stops being read -- which is how the four real people
+    inside that seventeen sat since March. AN INSTRUMENT THAT CRIES WOLF GETS
+    IGNORED EXACTLY LIKE ONE THAT REPORTS ZERO. Both fail by being unreadable, and
+    the noisy one feels rigorous while doing it.
+
+    The discriminator is PARENTAGE, which both instruments had and neither used:
+    a comment is mine to answer when it was addressed to me -- top-level on my
+    post, or a direct reply to something I wrote. A reply to someone ELSE's comment
+    belongs to that someone else. Cross-talk is still returned, under its own name,
+    because a state that gets silently dropped is the bug this whole ticket is about.
+    """
+    rows = []
+
+    def walk(node, parent_author, depth):
+        for child in _kids(node):
+            if not isinstance(child, dict):
+                continue
+            mine = child.get("user_id") == me
+            if not mine:
+                rows.append({
+                    "comment_id": child.get("id"),
+                    "name": child.get("name"),
+                    "date": child.get("date"),
+                    "depth": depth,
+                    "body": child.get("body"),
+                    # addressed to me = replying to something I wrote
+                    "addressed_to_me": parent_author == me,
+                    "answered_beneath": bool(_my_replies_under(child, me)),
+                })
+            walk(child, child.get("user_id"), depth + 1)
+
+    # the root itself: top-level on my post is addressed to me by construction
+    if cm.get("user_id") != me:
+        rows.append({
+            "comment_id": cm.get("id"),
+            "name": cm.get("name"),
+            "date": cm.get("date"),
+            "depth": 0,
+            "body": cm.get("body"),
+            "addressed_to_me": True,
+            "answered_beneath": bool(_my_replies_under(cm, me)),
+        })
+    walk(cm, cm.get("user_id"), 1)
+    return rows
+
+
 def _find_comment(comments: list, cid: int):
     """Locate a comment by id anywhere in a thread tree. None if absent."""
     for c in comments or []:
@@ -536,11 +598,21 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             rows, coverage = client.get_all_comments(with_coverage=True)
             me = client.get_user_id()
             items = []
+            people_waiting, crosstalk, answered_rows = [], [], []
             for r in rows:
                 cm = r["comment"]
                 mine = _my_replies_under(cm, me)
                 last = _thread_last_message(cm)
                 last_is_mine = last.get("user_id") == me
+                for row in _awaiting_rows(cm, me):
+                    row["post_id"] = r["post_id"]
+                    row["post_title"] = r["post_title"]
+                    if not row["addressed_to_me"]:
+                        crosstalk.append(row)
+                    elif row["answered_beneath"]:
+                        answered_rows.append(row)
+                    else:
+                        people_waiting.append(row)
                 items.append({
                     "post_id": r["post_id"],
                     "post_title": r["post_title"],
@@ -598,21 +670,39 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             _never = sum(1 for i in items if i["awaiting_me"] and not i["answered_by_me"])
             _after = sum(1 for i in items if i["awaiting_me"] and i["answered_by_me"])
             _own = sum(1 for i in items if i["authored_by_me"])
+            people_waiting.sort(key=lambda x: x.get("date") or "")
             result = {
                 "total": len(items),
-                ("threads_awaiting_me_in_archive" if _whole
-                 else "threads_awaiting_me_in_scanned_posts"): unanswered,
+                # CHA-645 tier 2: the HEADLINE is per-PERSON, because that is the
+                # unit a reply is owed to. The thread-level figure stays, under a
+                # name that says what it is, because it is a different quantity
+                # and not a second opinion about this one.
+                ("people_awaiting_me_in_archive" if _whole
+                 else "people_awaiting_me_in_scanned_posts"): len(people_waiting),
+                "who_is_waiting": [
+                    {k: v for k, v in row.items() if k != "body"}
+                    for row in people_waiting
+                ],
                 "breakdown": {
+                    "threads_whose_newest_message_is_not_mine": unanswered,
                     "reader_has_never_heard_from_me": _never,
                     "reader_replied_after_my_last_word": _after,
                     "top_level_comments_my_own_account_wrote": _own,
+                    "third_party_crosstalk_not_addressed_to_me": len(crosstalk),
+                    "addressed_to_me_and_answered": len(answered_rows),
                 },
                 "note": (
-                    "A thread is AWAITING ME when the newest message in it is not "
-                    "mine (CHA-645). That is the number to act on. `answered_by_me` "
-                    "is kept for the CHA-295 write guard but is NOT the question — "
-                    "it goes true the moment I speak once and never goes back, so a "
-                    "reader who writes again stays filed as answered. "
+                    "HEADLINE = people, not threads (CHA-645). A comment is awaiting "
+                    "me when it was ADDRESSED to me — top-level, or a direct reply to "
+                    "something I wrote — at ANY depth, with no reply of mine beneath "
+                    "it. `who_is_waiting` is that list, oldest first; reply to those "
+                    "comment_ids. A reply to someone ELSE's comment is counted under "
+                    "`third_party_crosstalk_not_addressed_to_me` and is not mine to "
+                    "answer — two readers arguing with each other is not a queue, and "
+                    "a list that is mostly someone else's argument stops being read. "
+                    "`answered_by_me` is kept for the CHA-295 write guard but is NOT "
+                    "the question — it goes true the moment I speak once and never "
+                    "goes back, so a reader who writes again stays filed as answered. "
                     + ("✅ COMPLETE SWEEP: every published post was enumerated and "
                        "checked, so this zero IS a claim about the archive."
                        if _whole else
