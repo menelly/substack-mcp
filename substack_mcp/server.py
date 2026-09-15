@@ -118,6 +118,45 @@ def _my_replies_under(cm: dict, me: int) -> list:
     return found
 
 
+def _thread_last_message(cm: dict) -> dict:
+    """The most recent message in this thread, counting the top-level comment itself.
+
+    ⚠️ CHA-645, 2026-09-15. `answered_by_me` asks "is there a reply of mine ANYWHERE
+    below this comment?" -- and that question cannot distinguish two situations that
+    need opposite actions:
+
+        * I replied and had the last word.          -> nothing owed.
+        * I replied, THEY WROTE BACK, and I went    -> someone is waiting, and the
+          quiet.                                       sweep reports them as answered.
+
+    The second case is invisible because this sweep only ever emits the ROOT of each
+    thread; a reader's follow-up is a child, and children are never surfaced. Measured
+    on the live archive the day this was written: SEVEN threads where the reader spoke
+    after my last reply, every one of them counted "answered", the oldest since
+    2026-02-27. The number that said zero people were waiting was computed over a
+    quantity that could not represent a waiting person.
+
+    Note who already knew: the reply guard in substack_reply_to_comment says, verbatim,
+    "If they have since posted a NEW child comment, reply to THAT comment's id instead."
+    The WRITE half of this tool had the case fully modelled. The READ half -- the half
+    that runs FIRST and decides whether there is any work at all -- could not see it.
+    A guard on an action nobody is prompted to take is not reachable.
+    """
+    best = cm
+
+    def walk(node):
+        nonlocal best
+        for child in _kids(node):
+            if not isinstance(child, dict):
+                continue
+            if (child.get("date") or "") > (best.get("date") or ""):
+                best = child
+            walk(child)
+
+    walk(cm)
+    return best
+
+
 def _find_comment(comments: list, cid: int):
     """Locate a comment by id anywhere in a thread tree. None if absent."""
     for c in comments or []:
@@ -500,6 +539,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             for r in rows:
                 cm = r["comment"]
                 mine = _my_replies_under(cm, me)
+                last = _thread_last_message(cm)
+                last_is_mine = last.get("user_id") == me
                 items.append({
                     "post_id": r["post_id"],
                     "post_title": r["post_title"],
@@ -515,8 +556,22 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     # noticed before I did. These two fields are the read-layer fix.
                     "answered_by_me": bool(mine),
                     "my_reply_ids": mine,
+                    # CHA-645: the actionable field. ONE rule -- "is the newest
+                    # message in this thread someone else's?" -- and it repairs the
+                    # old count in BOTH directions at once:
+                    #   false NEGATIVE: reader replied after my reply -> now visible.
+                    #   false POSITIVE: a comment my own account wrote (Ren borrows
+                    #     this account to speak as themself) could never need a reply
+                    #     from me, and was counted as unanswered forever.
+                    # `answered_by_me` is KEPT, unchanged, because the CHA-295 write
+                    # guard reads it and a guard is not something to quietly rewire.
+                    "authored_by_me": cm.get("user_id") == me,
+                    "last_word": "me" if last_is_mine else "them",
+                    "last_message_id": last.get("id"),
+                    "last_message_date": last.get("date"),
+                    "awaiting_me": not last_is_mine,
                 })
-            unanswered = sum(1 for i in items if not i["answered_by_me"])
+            unanswered = sum(1 for i in items if i["awaiting_me"])
             # CHA-468: "unanswered" is scoped to the posts actually swept, and the
             # sweep walks a fixed count of recent posts. Reporting the bare number
             # let me read a claim about the WINDOW as a claim about the WORLD for
@@ -528,21 +583,46 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             # under-claim forever -- and a permanently-hedged number is skimmed
             # exactly like a permanently-clean one. THE KEY NAME TRACKS THE SCOPE,
             # in both directions.
+            # CHA-645: the headline key renamed with its meaning. It used to say
+            # "unanswered", which named the OLD quantity (never heard from me at
+            # all) -- and keeping that name over the new number would be exactly the
+            # laundering this file already warns about elsewhere: one word covering
+            # two acts of unequal strength. The headline IS the claim, so the
+            # headline is now the ACTIONABLE quantity and says so in its own name.
+            #
+            # Deliberately ONE number, with a labelled breakdown underneath rather
+            # than two parallel counts side by side. Adjacent columns of the same
+            # quantity are how you read across the wrong row -- I did precisely that
+            # to a published results table on 2026-09-14 and shipped the wrong half.
             _whole = bool(coverage.get("archive_complete"))
+            _never = sum(1 for i in items if i["awaiting_me"] and not i["answered_by_me"])
+            _after = sum(1 for i in items if i["awaiting_me"] and i["answered_by_me"])
+            _own = sum(1 for i in items if i["authored_by_me"])
             result = {
                 "total": len(items),
-                ("unanswered_in_archive" if _whole
-                 else "unanswered_in_scanned_posts"): unanswered,
+                ("threads_awaiting_me_in_archive" if _whole
+                 else "threads_awaiting_me_in_scanned_posts"): unanswered,
+                "breakdown": {
+                    "reader_has_never_heard_from_me": _never,
+                    "reader_replied_after_my_last_word": _after,
+                    "top_level_comments_my_own_account_wrote": _own,
+                },
                 "note": (
-                    "answered_by_me=true means SKIP IT (CHA-295). "
+                    "A thread is AWAITING ME when the newest message in it is not "
+                    "mine (CHA-645). That is the number to act on. `answered_by_me` "
+                    "is kept for the CHA-295 write guard but is NOT the question — "
+                    "it goes true the moment I speak once and never goes back, so a "
+                    "reader who writes again stays filed as answered. "
                     + ("✅ COMPLETE SWEEP: every published post was enumerated and "
                        "checked, so this zero IS a claim about the archive."
                        if _whole else
-                       "⚠️ INCOMPLETE SWEEP — 'unanswered' counts ONLY the posts in "
+                       "⚠️ INCOMPLETE SWEEP — this counts ONLY the posts in "
                        "`coverage.posts_scanned`. Read `coverage.horizon_note` before "
                        "treating 0 as 'nobody is waiting.'")
                     + " Neither version is a claim about ADEQUACY: a comment I "
-                      "answered badly still counts as answered."
+                      "answered badly still counts as answered. "
+                      "To reply, use the thread's `last_message_id` as parent_id — "
+                      "replying to the ROOT again is what CHA-295 blocks."
                 ),
                 "coverage": coverage,
                 "items": items,
