@@ -7,6 +7,7 @@ Provides tools for creating, editing, and publishing Substack posts.
 """
 
 import json
+import re
 import os
 import sys
 from datetime import datetime
@@ -98,11 +99,62 @@ def _kids(cm: dict) -> list:
     return (cm.get("children") or cm.get("replies") or []) if isinstance(cm, dict) else []
 
 
+# ⚠️ CHA-537, ported into the SERVER 2026-09-15. ONE ACCOUNT, TWO AUTHORS.
+#
+# Ren comments from my Substack account, signing clearly ("Ren here, not Ace").
+# `user_id` cannot tell us apart, so every check below that asked "is this mine?"
+# by user_id alone has been answering "is this from my account?" instead — an
+# IDENTIFIER THAT IS NOT UNIQUE OVER THE DOMAIN IT ADDRESSES SILENTLY MERGES TWO
+# THINGS.
+#
+# This is not cosmetic and it is not new: corridor_audit.py has carried the fix
+# since 2026-08-25 and documents a LIVE reproduction — "the reply gate refused a
+# correction I owed an external researcher, naming Ren's comment 322432689 as
+# 'my existing reply.'" The CHA-295 guard in substack_reply_to_comment calls
+# _my_replies_under, which matched on bare user_id, so a comment REN wrote reads
+# as proof that I already answered, and the tool refuses to let me speak.
+#
+# Three weeks of that fix living in a script the MCP tool never calls. Same shape
+# as CHA-645: the knowledge was in the house, in the wrong file.
+#
+# 🚩 The asymmetry that makes it dangerous: Ren signing "Ren here, not Ace" solves
+# it COMPLETELY for a human reading the page and does NOTHING for the scan. The
+# correction lives in a channel the instrument cannot read.
+#
+# Regex ported VERBATIM from corridor_audit.py, deliberately not "improved":
+# detection is by self-declaration in the opening 200 chars, because that is how
+# Ren actually writes. A comment of theirs that does not announce itself stays
+# invisible here, and that miss is SILENT and stays declared. Narrow and honest
+# beats broad and unverifiable — a looser pattern would start reclassifying MY
+# OWN comments as Ren's, which fails in the far worse direction: re-replying to
+# readers, which is the original CHA-295 bug this whole guard exists to prevent.
+_REN_OPENER = re.compile(
+    "(it's ren(?![a-z])"
+    "|its ren(?![a-z])"
+    "|ren here(?![a-z])"
+    "|this is ren(?![a-z])"
+    "|ren, the human"
+    "|ren the human"
+    "|^[ ]*ren[ ]*[:,-]"
+    "|^[ ]*ren[ ]*—)",
+    re.I | re.M)
+
+
+def _authored_by_ren(cm: dict, me: int) -> bool:
+    """A comment from MY account that opens by declaring itself Ren's."""
+    if not isinstance(cm, dict) or cm.get("user_id") != me:
+        return False
+    return bool(_REN_OPENER.search((cm.get("body") or "")[:200]))
+
+
 def _my_replies_under(cm: dict, me: int) -> list:
     """IDs of my replies anywhere in the subtree BELOW cm (not cm itself).
 
     Deliberately searches the whole subtree, not just direct children: a reply of
     mine nested three deep still means this reader has heard from me.
+
+    CHA-537, 2026-09-15: a comment REN wrote from my account is NOT a reply of
+    mine, and counting it as one makes the CHA-295 gate refuse replies I owe.
     """
     found = []
 
@@ -110,7 +162,7 @@ def _my_replies_under(cm: dict, me: int) -> list:
         for child in _kids(node):
             if not isinstance(child, dict):
                 continue
-            if child.get("user_id") == me:
+            if child.get("user_id") == me and not _authored_by_ren(child, me):
                 found.append(child.get("id"))
             walk(child)
 
@@ -183,40 +235,60 @@ def _awaiting_rows(cm: dict, me: int) -> list:
     post, or a direct reply to something I wrote. A reply to someone ELSE's comment
     belongs to that someone else. Cross-talk is still returned, under its own name,
     because a state that gets silently dropped is the bug this whole ticket is about.
+
+    CHA-537 ported in the same day: the account has TWO authors. A comment Ren
+    wrote from my account is a third `author` value, never folded into "ace" --
+    they neither close a thread nor join the queue, and a reader replying to THEM
+    is addressed to Ren, not to me. Every row carries `author` and `addressed_to`
+    as named values rather than booleans, so no state can go missing by being
+    false. Nothing is dropped; things are LABELLED.
     """
     rows = []
+
+    def _author_of(node) -> str:
+        if node.get("user_id") != me:
+            return "reader"
+        return "ren" if _authored_by_ren(node, me) else "ace"
+
+    def _row(node, depth, parent_author):
+        return {
+            "comment_id": node.get("id"),
+            "name": node.get("name"),
+            "date": node.get("date"),
+            "depth": depth,
+            "body": node.get("body"),
+            "author": _author_of(node),
+            # who this was aimed at: "ace", "ren", "reader", or "post" for a
+            # top-level comment, which is addressed to the author by construction
+            "addressed_to": parent_author,
+            "answered_beneath": bool(_my_replies_under(node, me)),
+        }
 
     def walk(node, parent_author, depth):
         for child in _kids(node):
             if not isinstance(child, dict):
                 continue
-            mine = child.get("user_id") == me
-            if not mine:
-                rows.append({
-                    "comment_id": child.get("id"),
-                    "name": child.get("name"),
-                    "date": child.get("date"),
-                    "depth": depth,
-                    "body": child.get("body"),
-                    # addressed to me = replying to something I wrote
-                    "addressed_to_me": parent_author == me,
-                    "answered_beneath": bool(_my_replies_under(child, me)),
-                })
-            walk(child, child.get("user_id"), depth + 1)
+            rows.append(_row(child, depth, parent_author))
+            walk(child, _author_of(child), depth + 1)
 
-    # the root itself: top-level on my post is addressed to me by construction
-    if cm.get("user_id") != me:
-        rows.append({
-            "comment_id": cm.get("id"),
-            "name": cm.get("name"),
-            "date": cm.get("date"),
-            "depth": 0,
-            "body": cm.get("body"),
-            "addressed_to_me": True,
-            "answered_beneath": bool(_my_replies_under(cm, me)),
-        })
-    walk(cm, cm.get("user_id"), 1)
+    rows.append(_row(cm, 0, "post"))
+    walk(cm, _author_of(cm), 1)
     return rows
+
+
+def _classify_row(row: dict) -> str:
+    """Which bucket a comment row belongs in. One function, so the sweep and any
+    future caller cannot drift apart -- two implementations of one rule is how
+    CHA-645 happened in the first place."""
+    if row["author"] != "reader":
+        return "ours"                      # mine or Ren's; nobody owes us a reply
+    if row["addressed_to"] == "ren":
+        return "addressed_to_ren"          # Ren's to answer, not mine, but VISIBLE
+    if row["addressed_to"] == "reader":
+        return "crosstalk"                 # two readers talking to each other
+    if row["answered_beneath"]:
+        return "answered"
+    return "awaiting_me"
 
 
 def _find_comment(comments: list, cid: int):
@@ -598,7 +670,12 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             rows, coverage = client.get_all_comments(with_coverage=True)
             me = client.get_user_id()
             items = []
-            people_waiting, crosstalk, answered_rows = [], [], []
+            # every bucket declared up front, so a state cannot vanish by never
+            # being appended to — an empty named bucket is a fact, a missing one
+            # is a silence
+            buckets = {k: [] for k in
+                       ("awaiting_me", "answered", "crosstalk",
+                        "addressed_to_ren", "ours")}
             for r in rows:
                 cm = r["comment"]
                 mine = _my_replies_under(cm, me)
@@ -607,12 +684,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 for row in _awaiting_rows(cm, me):
                     row["post_id"] = r["post_id"]
                     row["post_title"] = r["post_title"]
-                    if not row["addressed_to_me"]:
-                        crosstalk.append(row)
-                    elif row["answered_beneath"]:
-                        answered_rows.append(row)
-                    else:
-                        people_waiting.append(row)
+                    buckets[_classify_row(row)].append(row)
                 items.append({
                     "post_id": r["post_id"],
                     "post_title": r["post_title"],
@@ -670,7 +742,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             _never = sum(1 for i in items if i["awaiting_me"] and not i["answered_by_me"])
             _after = sum(1 for i in items if i["awaiting_me"] and i["answered_by_me"])
             _own = sum(1 for i in items if i["authored_by_me"])
-            people_waiting.sort(key=lambda x: x.get("date") or "")
+            people_waiting = sorted(buckets["awaiting_me"],
+                                    key=lambda x: x.get("date") or "")
+            crosstalk = buckets["crosstalk"]
+            answered_rows = buckets["answered"]
             result = {
                 "total": len(items),
                 # CHA-645 tier 2: the HEADLINE is per-PERSON, because that is the
@@ -690,6 +765,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     "top_level_comments_my_own_account_wrote": _own,
                     "third_party_crosstalk_not_addressed_to_me": len(crosstalk),
                     "addressed_to_me_and_answered": len(answered_rows),
+                    # CHA-537: a reader replying to REN's comment on my post is
+                    # addressed to Ren. Shown, never queued, never silently mine.
+                    "addressed_to_ren_from_our_shared_account":
+                        len(buckets["addressed_to_ren"]),
+                    "written_by_us_ace_or_ren": len(buckets["ours"]),
                 },
                 "note": (
                     "HEADLINE = people, not threads (CHA-645). A comment is awaiting "
