@@ -43,3 +43,7 @@ Thumbs.db
 
 # generated audit dumps -- regenerate with corridor_audit.py
 corridor_audit_*.txt
+
+# scratch drafts left by earlier arms (CHA-645, 2026-09-15)
+_body.tmp
+*.tmp
