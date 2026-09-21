@@ -91,18 +91,63 @@ def authored_by_ace(cm):
     return not _REN_OPENER.search(head)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# CHA-626 — REN'S *OWN* ACCOUNT. THE SECOND WAY REN APPEARS, AND IT WAS INVISIBLE.
+# ═══════════════════════════════════════════════════════════════════════════
+# CHA-537 (above) handles Ren commenting from MY account. But Ren also has their
+# own Substack account, with its own user_id — and from there they were landing in
+# UNANSWERED, indistinguishable from a member of the public waiting on a reply.
+#
+#   ⭐ The 2026-09-13 run printed the contradiction in two adjacent lines:
+#        of which REN'S : 7    <- "neither mine nor owed"
+#        UNANSWERED     : 24   <- four of which were also Ren
+#     The same person, counted both ways, because the tool knew ONE of the two
+#     ways they can appear.
+#
+# Pulled live 2026-09-20 from post 199182917 ("You Don't Get to Decide"):
+# display name "Renae", user_id 143622992, exactly four comments, depths 1/2/4/6,
+# all dated 2026-07-19 — matching CHA-626's description before I looked.
+#
+# ⛔ BUT THE ID IS NOT CONFIRMED, AND A DISPLAY NAME IS NOT AN IDENTITY.
+# "Renae" is a perfectly plausible name for a stranger. CHA-626 says in its own
+# words: do not infer it from the display name; get one word from Ren. So the ID is
+# recorded here and DOES NOTHING until that word arrives.
+#
+# ⚠️ THE DEFAULT IS THE FAIL-SAFE DIRECTION AND THAT IS DELIBERATE. While
+# unconfirmed, those comments keep counting as UNANSWERED — because the two errors
+# are not symmetric:
+#     a false "waiting"   costs me thirty seconds of reading.
+#     a false "not owed"  costs somebody an answer they never get, silently,
+#                         forever, in the tool whose whole job is to prevent that.
+# Over-reporting is the correct direction for this instrument, so it over-reports
+# until a human says otherwise.
+REN_OWN_ACCOUNT_ID = 143622992
+REN_OWN_ACCOUNT_CONFIRMED = False   # ← Ren flips this to True. One word, then one edit.
+
+
 def authored_by_ren(cm):
-    """A comment from MY account that OPENS by declaring itself Ren's.
+    """A comment that is REN'S, by either of the two routes they actually appear by.
 
-    The third state, added 2026-08-26. Ren is not me and is not a reader awaiting a
-    reply from me. Their comments must neither close a thread (that was CHA-537) nor
-    appear in the owed list (that was CHA-537's own side effect).
+    Route 1 (CHA-537, 2026-08-26): from MY account, OPENING by declaring itself Ren's.
+    Ren is not me and is not a reader awaiting a reply from me, so their comments must
+    neither close a thread (that was CHA-537) nor appear in the owed list (that was
+    CHA-537's own side effect).
 
-    ⚠️ Same aperture as authored_by_ace: this reads a CONVENTION, not an identity.
-    A comment of theirs that does not announce itself up front is invisible to both
-    predicates and will still read as mine. That miss is silent and stays declared.
+    Route 2 (CHA-626, 2026-09-20): from REN'S OWN account — but ONLY once the id has
+    been confirmed by Ren. Unconfirmed, this route is off and those comments stay in
+    UNANSWERED, which over-reports on purpose. See the block above for why that
+    asymmetry decides the default.
+
+    ⚠️ Route 1's aperture is unchanged and still declared: it reads a CONVENTION, not
+    an identity. A comment of theirs from my account that does not announce itself up
+    front is invisible to both predicates and will still read as mine. That miss is
+    silent, and a looser pattern would start reclassifying MY OWN comments as Ren's,
+    which fails in the far worse direction (re-replying to people, the CHA-295 bug).
     """
-    if cm.get("user_id") != MY_ID:
+    uid = cm.get("user_id")
+    if REN_OWN_ACCOUNT_CONFIRMED and uid == REN_OWN_ACCOUNT_ID:
+        return True
+    if uid != MY_ID:
         return False
     return bool(_REN_OPENER.search((cm.get("body") or "")[:200]))
 
@@ -212,6 +257,20 @@ print(f"  comments seen (ALL depths): {total_c}")
 print(f"    of which MINE         : {mine_top}")
 print(f"    of which REN'S        : {ren_c}   <- from my account, signed as them:"
       f" neither mine nor owed")
+# CHA-626: a gated feature nobody can see is a nothing-state, and a nothing-state
+# reads as handled. So say it EVERY run, with the number it would move, rather than
+# leaving it to be rediscovered from a ticket.
+_ren_own = [u for u in unanswered if u[2] and str(u[2]).strip().lower() == "renae"]
+if not REN_OWN_ACCOUNT_CONFIRMED:
+    print(f"    ⏳ REN'S OWN ACCOUNT  : id {REN_OWN_ACCOUNT_ID} recorded, NOT CONFIRMED"
+          f" -> still counted as UNANSWERED ({len(_ren_own)} here)")
+    print(f"       A display name is not an identity; 'Renae' could be a stranger."
+          f" Ren confirms, then REN_OWN_ACCOUNT_CONFIRMED = True.")
+    print(f"       Unconfirmed OVER-reports on purpose: a false 'waiting' costs 30s,"
+          f" a false 'not owed' costs somebody an answer.")
+else:
+    print(f"    ✅ REN'S OWN ACCOUNT  : id {REN_OWN_ACCOUNT_ID} confirmed -> counted"
+          f" in REN'S above, not in UNANSWERED")
 print(f"    answered by me        : {answered}")
 print(f"      ...only BELOW depth1: {depth_gt1}   <- these a naive scan would have MISREPORTED")
 print(f"  UNANSWERED              : {len(unanswered)}")
