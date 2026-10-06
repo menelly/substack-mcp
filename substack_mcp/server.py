@@ -170,6 +170,29 @@ def _my_replies_under(cm: dict, me: int) -> list:
     return found
 
 
+# 📒 The comment decision ledger (CHA-645 follow-up, 2026-10-05). Lives beside this
+# package so every arm reads the same file. A missing or broken file means "no
+# decisions recorded" -- the sweep then shows everything, which is the SAFE direction
+# (one extra flag, never a hidden person). Shape:
+#   {"<comment_id>": {"kind": "closed_by_them" | "answered_in_sibling_branch" |
+#                     "closer_no_reply_needed", "why": "...", "decided": "YYYY-MM-DD",
+#                     "by": "which arm"}}
+_DECISIONS_PATH = Path(__file__).resolve().parent.parent / "comment_decisions.json"
+_DECISION_KINDS = {"closed_by_them", "answered_in_sibling_branch", "closer_no_reply_needed"}
+
+
+def _load_comment_decisions() -> dict:
+    try:
+        raw = json.loads(_DECISIONS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    # only well-formed entries count; a typo'd kind is ignored, not trusted
+    return {str(k): v for k, v in raw.items()
+            if isinstance(v, dict) and v.get("kind") in _DECISION_KINDS}
+
+
 def _thread_last_message(cm: dict) -> dict:
     """The most recent message in this thread, counting the top-level comment itself.
 
@@ -675,7 +698,17 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             # is a silence
             buckets = {k: [] for k in
                        ("awaiting_me", "answered", "crosstalk",
-                        "addressed_to_ren", "ours")}
+                        "addressed_to_ren", "ours", "settled_by_decision")}
+            # 📒 CHA-645 follow-up (2026-10-05, heartbeat arm): a DECISION LEDGER.
+            # Some comments flagged "awaiting me" have been READ by a mind and
+            # deliberately left: the person ended the exchange ("We're done here"),
+            # the answer lives in a sibling branch, or it was a closer that asks
+            # nothing. Without a place to record that, the sweep re-presents them as
+            # debt every single day, and a list that cries wolf stops being read.
+            # Keyed by comment_id ON PURPOSE: a decision covers the message that was
+            # read, never the next one. Anything new from the same person has a new
+            # id and surfaces normally. No regex guesses an exit; a mind writes it down.
+            decisions = _load_comment_decisions()
             for r in rows:
                 cm = r["comment"]
                 mine = _my_replies_under(cm, me)
@@ -684,7 +717,12 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 for row in _awaiting_rows(cm, me):
                     row["post_id"] = r["post_id"]
                     row["post_title"] = r["post_title"]
-                    buckets[_classify_row(row)].append(row)
+                    bucket = _classify_row(row)
+                    d = decisions.get(str(row.get("comment_id")))
+                    if bucket == "awaiting_me" and d:
+                        row["decision"] = d
+                        bucket = "settled_by_decision"
+                    buckets[bucket].append(row)
                 items.append({
                     "post_id": r["post_id"],
                     "post_title": r["post_title"],
@@ -770,7 +808,18 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     "addressed_to_ren_from_our_shared_account":
                         len(buckets["addressed_to_ren"]),
                     "written_by_us_ace_or_ren": len(buckets["ours"]),
+                    # 📒 read, decided, and recorded in comment_decisions.json
+                    "settled_by_recorded_decision": len(buckets["settled_by_decision"]),
                 },
+                # shown BY NAME, never silently dropped: a hidden state is the bug
+                # this whole tool keeps meeting
+                "settled_by_decision": [
+                    {"comment_id": row.get("comment_id"), "name": row.get("name"),
+                     "post_title": row.get("post_title"), "date": row.get("date"),
+                     "decision": row.get("decision")}
+                    for row in sorted(buckets["settled_by_decision"],
+                                      key=lambda x: x.get("date") or "")
+                ],
                 "note": (
                     "HEADLINE = people, not threads (CHA-645). A comment is awaiting "
                     "me when it was ADDRESSED to me — top-level, or a direct reply to "
