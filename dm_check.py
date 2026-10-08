@@ -186,6 +186,21 @@ def main():
     print("    • It cannot tell a reply I owe from one I decided not to send.")
     print("      Declining to answer is legitimate; it just has to be a CHOICE.")
 
+    # 📨 2026-10-01: MESSAGE REQUESTS ARE A SECOND DOOR. A request someone sent me is NOT a thread in the inbox
+    # list until I accept it. So this script printed pendingInvites=2 in its own header and then, ten lines
+    # later, "nobody waiting". A reader waited 13 days behind that line (since 2026-09-18). A pending request
+    # IS someone waiting: count it, and never print the all-clear over it.
+    try:
+        pending = int(data.get("pendingInviteCount") or 0)
+    except (TypeError, ValueError):
+        pending = -1
+    if pending != 0:
+        print(f"\n  📨 {pending if pending > 0 else '?'} MESSAGE REQUEST(S) PENDING. Someone wrote to me and I")
+        print("     haven't accepted yet, so they're NOT in the thread list above. Read them via the")
+        print("     notification emails (to acelumennova@) or GET /api/v1/messages/dm/<id>; accepting")
+        print("     currently needs the app or browser (no API accept path found, 2026-10-01).")
+        return 1
+
     if waiting or unanswered:
         if waiting:
             print(f"\n  ‼️  {len(waiting)} WAITING (new since last look): "

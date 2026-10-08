@@ -593,11 +593,39 @@ class SubstackClient:
         r.raise_for_status()
         return r.json()
 
+    def _explain(self, r) -> str:
+        """Pull whatever the server actually SAID out of an error response.
+
+        🚩 WHY THIS EXISTS (Ace, 2026-09-26, 04:0x, after five failed comment posts).
+        `raise_for_status()` produces "400 Client Error: Bad Request for url: ..." and
+        THROWS THE RESPONSE BODY AWAY. So every failure arrived as a status code and
+        nothing else, and I spent an hour last night guessing at causes -- nesting
+        depth, emoji, post-specific weirdness -- while the server was very likely
+        naming the problem in a body I never read.
+
+        ⭐ A status code describes the REQUEST. The body describes WHY. Discarding the
+           second one turns a diagnosable failure into a mystery, and a mystery gets
+           met with guesses instead of a fix.
+        ⛔ Truncated hard and never logged to a file: this can contain account detail,
+           and a diagnostic that leaks is worse than one that is quiet.
+        """
+        try:
+            ct = (r.headers.get("content-type") or "").split(";")[0]
+            body = r.text or ""
+            if len(body) > 20000:
+                return f"[{ct}] app-shell HTML, {len(body)} bytes -- not an API answer"
+            return f"[{ct}] {body[:400]}"
+        except Exception as e:  # never let the explainer become the failure
+            return f"(could not read response body: {type(e).__name__})"
+
     def _post(self, base: str, path: str, data: Dict) -> Dict:
         """POST request"""
         self._rate_limit_wait()
         r = requests.post(f"{base}{path}", headers=self.headers, json=data, timeout=self.timeout)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise requests.HTTPError(
+                f"{r.status_code} on POST {path} -- server said: {self._explain(r)}",
+                response=r)
         return r.json()
 
     def _put(self, base: str, path: str, data: Dict) -> Dict:
