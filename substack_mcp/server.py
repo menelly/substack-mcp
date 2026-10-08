@@ -34,6 +34,39 @@ try:
 except (AttributeError, ValueError):
     pass
 
+# 🧟 STALE-CODE TRIPWIRE (CHA-448, 2026-10-08, night-chores arm).
+# An MCP server loads its code ONCE, at launch, and then serves that code for days.
+# In July six of these processes kept serving the pre-fix /drafts code for six days
+# after the fix landed, and substack_get_drafts said "[]" while six drafts existed.
+# On 2026-10-08 it was happening AGAIN: six servers started 10/2, code changed 10/5.
+# Nothing compared "when was the file I'm running written" to "when did I load it".
+# So: remember the mtimes at import, and on every tool call, if a source file on
+# disk is newer than what this process loaded, SAY SO inside the result, where the
+# reader is actually looking. A fix on disk is not a fix that is running.
+_HERE = Path(__file__).resolve()
+_WATCHED = [_HERE, _HERE.parent.parent / "substack_client.py"]
+_LOADED_MTIMES = {p: (p.stat().st_mtime if p.exists() else None) for p in _WATCHED}
+
+
+def _stale_code_warning() -> Optional[str]:
+    """Return a loud one-paragraph warning if code on disk is newer than this process."""
+    newer = []
+    for p, loaded in _LOADED_MTIMES.items():
+        try:
+            now = p.stat().st_mtime
+        except OSError:
+            continue
+        if loaded is not None and now > loaded + 1:
+            newer.append(f"{p.name} (edited {datetime.fromtimestamp(now):%Y-%m-%d %H:%M}, "
+                         f"this process loaded {datetime.fromtimestamp(loaded):%Y-%m-%d %H:%M})")
+    if not newer:
+        return None
+    return ("⚠️ STALE SERVER: this MCP process is running OLDER code than disk: "
+            + "; ".join(newer)
+            + ". Results below come from the old code. Restart Claude Code (or /mcp reconnect) "
+              "before trusting an empty or surprising answer. (CHA-448)")
+
+
 # Create server instance
 server = Server("substack")
 
@@ -520,6 +553,15 @@ async def list_tools() -> list[types.Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    """Execute a tool call, and prepend the stale-code warning if disk moved on (CHA-448)."""
+    out = await _call_tool_impl(name, arguments)
+    warning = _stale_code_warning()
+    if warning:
+        out = [types.TextContent(type="text", text=warning)] + list(out)
+    return out
+
+
+async def _call_tool_impl(name: str, arguments: dict) -> list[types.TextContent]:
     """Execute a tool call"""
     global client, live_session
 
