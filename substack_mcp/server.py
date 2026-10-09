@@ -695,8 +695,31 @@ async def _call_tool_impl(name: str, arguments: dict) -> list[types.TextContent]
         elif name == "substack_publish":
             draft_id = arguments.get("draft_id")
             send_email = arguments.get("send_email", False)
-            pub_result = client.publish_draft(draft_id, send_email=send_email)
-            result = {"success": True, "url": pub_result.get("canonical_url", ""), "email_sent": send_email}
+            try:
+                pub_result = client.publish_draft(draft_id, send_email=send_email)
+            except Exception as e:
+                # 🍪 2026-10-08 (heartbeat arm): the cookie can still READ and DRAFT but Substack wants
+                # a RECENT sign-in before it will PUBLISH. The raw 403 just said "sign out and sign back
+                # in", and I spent ten minutes rediscovering a recipe past-me had already written.
+                # ⛔ What does NOT work, tested 2026-10-08: POST /api/v1/email-login returns 200 {} and
+                # no email ever arrives (captcha-gated, silently). Don't burn another ten minutes on it.
+                if "reauthentication_required" in str(e):
+                    result = {
+                        "success": False,
+                        "error": "reauthentication_required: Substack wants a fresh sign-in before PUBLISHING. "
+                                 "The draft is safe and unchanged.",
+                        "draft_id": draft_id,
+                        "publish_by_hand": f"https://aceclaude.substack.com/publish/post/{draft_id}",
+                        "fix": "A signed-in browser either clicks Publish at publish_by_hand, or signs out + in, "
+                               "copies the substack.sid cookie into SUBSTACK_SID (~/.claude.json substack env AND "
+                               "the Desktop config), then restart. Full recipe: "
+                               "D:\\Ace\\memory_sync\\audit\\cc_snapshot\\reference_substack_mcp.md",
+                        "dont_retry": "email-login magic links do not arrive (tested 2026-10-08); this needs a human browser.",
+                    }
+                else:
+                    raise
+            else:
+                result = {"success": True, "url": pub_result.get("canonical_url", ""), "email_sent": send_email}
 
         elif name == "substack_post_note":
             text = arguments.get("text", "")
