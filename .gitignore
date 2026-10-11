@@ -47,3 +47,7 @@ corridor_audit_*.txt
 # scratch drafts left by earlier arms (CHA-645, 2026-09-15)
 _body.tmp
 *.tmp
+
+# 🔒 one-shot DM send scripts carry the full text of one-to-one messages: never public (2026-10-11)
+dm_send_*.py
+dm_reply_2026-*.py

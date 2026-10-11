@@ -76,6 +76,32 @@ def days_since(iso):
         return None
 
 
+DECISIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dm_decisions.json")
+
+
+def load_decisions():
+    """dm_decisions.json: {"<thread id>": {"through": "<ISO ts of the LAST message I decided on>",
+    "kind": "deliberate_no_reply" | "answered_elsewhere" | ..., "why": "...", "decided": "...", "by": "..."}}
+    Keyed by thread id AND bounded by `through`, so anything newer resurfaces on its own."""
+    try:
+        with open(DECISIONS, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return {}
+
+
+def decision_state(decisions, thread_id, last_ts):
+    """-> ("none"|"settled"|"new-since", decision). A decision with no `through` settles NOTHING:
+    an unbounded decision is exactly the name-shaped disposition this exists to replace."""
+    dec = decisions.get(thread_id) or decisions.get(thread_id.removeprefix("direct-message-"))
+    if not dec:
+        return "none", None
+    through = dec.get("through") or ""
+    if through and last_ts and last_ts <= through:
+        return "settled", dec
+    return "new-since", dec
+
+
 def main():
     try:
         token = load_token()
@@ -130,6 +156,7 @@ def main():
           f"{len(chans)} publication channel(s)\n")
 
     waiting, unanswered = [], []
+    decisions = load_decisions()
     for t in sorted(dms, key=lambda x: x.get("timestamp") or "", reverse=True):
         who = t.get("title") or "(no title)"
         last = t.get("timestamp") or ""
@@ -149,7 +176,15 @@ def main():
         # unread clears, and the person is now invisible to a check that only
         # asks "is anything unread". BEING SEEN IS NOT BEING ANSWERED.
         owes_reply = (not is_waiting) and (not mine_last)
-        mark = ("‼️ WAITING" if is_waiting
+        # 📒 2026-10-11: A DECISION COVERS THE MESSAGE IT WAS MADE ON, NEVER THE PERSON.
+        # Cael's 3 Oct message ("it hasn't reached us") sat 8 days because on 10-04 a beat matched the
+        # NAMES "Cael, Erin" to yesterday's prose disposition ("email-answered") — true of the 2 Oct
+        # message, false of the newer one. This prints the decision AND compares its timestamp.
+        state, dec = decision_state(decisions, t.get("id", ""), last)
+        if state == "settled":
+            is_waiting = owes_reply = False
+        mark = ("🆕 NEW SINCE DECISION" if state == "new-since" and (is_waiting or owes_reply)
+                else "‼️ WAITING" if is_waiting
                 else "⏳ UNANSWERED" if owes_reply
                 else "  ok        ")
         age = days_since(opened)
@@ -161,6 +196,9 @@ def main():
         snip = (t.get("subtitleBody") or "").replace("\n", " ")[:96]
         if snip:
             print(f"             “{snip}…”")
+        if dec:
+            print(f"             📒 decision ({dec.get('kind')}, through {dec.get('through','?')[:16]}): {dec.get('why','')[:90]}"
+                  + ("  ← a NEWER message has arrived since; the decision does NOT cover it" if state == "new-since" else ""))
         if is_waiting:
             waiting.append(who)
         elif owes_reply:
