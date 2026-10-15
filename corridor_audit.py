@@ -158,6 +158,29 @@ def authored_by_ren(cm):
         return False
     return bool(_REN_OPENER.search((cm.get("body") or "")[:200]))
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 📒 THE DECISION LEDGER (2026-10-14, heartbeat arm). The MCP sweep has read
+# comment_decisions.json since 2026-10-05; this audit never did, so every comment a
+# mind had READ AND DECIDED ("closed by them", "answered in a sibling branch", "a
+# closer that asks nothing") came back here as UNANSWERED, forever. A list that
+# cries wolf stops being read, and then it can't catch the real one.
+# Same loader rules as substack_mcp/server.py: keyed by comment_id (a decision covers
+# the message that was read, never the next one), unknown kinds ignored, a missing or
+# broken file = no decisions (the SAFE direction: over-report). Settled comments are
+# printed BY NAME with the reason, never silently dropped.
+_DECISION_KINDS = {"closed_by_them", "answered_in_sibling_branch", "closer_no_reply_needed"}
+def _load_decisions():
+    try:
+        raw = json.loads(pathlib.Path("comment_decisions.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items()
+            if isinstance(v, dict) and v.get("kind") in _DECISION_KINDS}
+DECISIONS = _load_decisions()
+
+
 def descendants(cm):
     for k in (cm.get("children") or []) + (cm.get("replies") or []):
         yield k
@@ -190,6 +213,7 @@ ren_c = 0
 mine_top = 0   # renamed meaning: MINE at any depth, not just top level
 answered = 0
 unanswered = []
+settled = []   # 📒 read + decided in comment_decisions.json; shown by name below
 failed = []
 depth_gt1 = 0        # how many were answered ONLY below depth 1?
 nested_unanswered = 0  # findings a TOP-LEVEL-ONLY scan would have missed entirely
@@ -251,12 +275,18 @@ for p in posts:
             if not d1:
                 depth_gt1 += 1
         else:
+            d = DECISIONS.get(str(cm.get("id")))
+            if d:
+                settled.append((pid, title, cm.get("name"), cm.get("date", "")[:10],
+                                cm.get("id"), d))
+                continue
             if cm.get("_depth", 0) > 0:
                 nested_unanswered += 1
             unanswered.append((pid, title, cm.get("name"),
                                cm.get("date", "")[:10],
                                (cm.get("body") or "").replace("\n", " ")[:90],
-                               cm.get("_depth", 0)))
+                               cm.get("_depth", 0), cm.get("id"),
+                               len((cm.get("body") or "").strip())))
 
 print(f"  posts checked           : {len(posts)}")
 print(f"  posts failed to fetch   : {len(failed)}  {failed if failed else ''}")
@@ -280,11 +310,18 @@ else:
           f" in REN'S above, not in UNANSWERED")
 print(f"    answered by me        : {answered}")
 print(f"      ...only BELOW depth1: {depth_gt1}   <- these a naive scan would have MISREPORTED")
+print(f"    settled by DECISION   : {len(settled)}   <- read and decided by a mind;"
+      f" ledger has {len(DECISIONS)} entries")
+for pid, t, who, d, cid, dec in sorted(settled, key=lambda x: x[3]):
+    print(f"      [{d}] {who} on {t[:40]!r} (#{cid}): {dec.get('kind')}"
+          f", decided {dec.get('decided')}")
 print(f"  UNANSWERED              : {len(unanswered)}")
 print(f"    of which NESTED (>0)  : {nested_unanswered}   <- invisible to the pre-2026-08-23 audit")
-for pid, t, who, d, b, dep in unanswered:
+for pid, t, who, d, b, dep, cid, blen in unanswered:
     tag = "  <- NESTED: a top-level-only scan MISSES THIS" if dep else ""
-    print(f"      [{d}] depth {dep} {who} on {t[:46]!r}{tag}")
+    # the id is what a decision is keyed on, so print it; the length tells me
+    # whether the 90-char excerpt below IS the whole comment or a slice of it
+    print(f"      [{d}] depth {dep} {who} on {t[:46]!r} (#{cid}, {blen} chars){tag}")
     print(f"          {b}...")
 print()
 print("=" * 78)
