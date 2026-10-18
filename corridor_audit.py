@@ -42,6 +42,18 @@ c = SubstackClient(tok, pub)
 MY_ID = 444825118
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 🔗 2026-10-17 (CHA-645, builderAce): THIS FILE NO LONGER CARRIES ITS OWN RULE.
+# ═══════════════════════════════════════════════════════════════════════════
+# It used to: its own Ren regex, its own Ren-account id, its own decision loader,
+# and its own "every foreign comment at any depth is unanswered" rule. The MCP
+# server carried a SECOND copy. They drifted both ways: this file knew Ren's own
+# account (CHA-626) and the server didn't; the server knew the parentage rule
+# (tier 2, 09-15) and this file didn't, so it counted strangers' arguments as my
+# debt. Both now import ONE copy: thread_rules.py. The stories that justify each
+# piece are kept below as comments, because they are the receipts.
+
+# ── CHA-537 story (code now in thread_rules.py) ──
+# ═══════════════════════════════════════════════════════════════════════════
 # CHA-537 — ONE ACCOUNT, TWO AUTHORS. `user_id` IS NOT AN AUTHORSHIP CLAIM.
 # ═══════════════════════════════════════════════════════════════════════════
 # Ren sometimes comments from MY account, signing clearly so a human reader knows
@@ -61,35 +73,6 @@ MY_ID = 444825118
 #
 # Reproduced live 2026-08-25: the reply gate refused a correction I owed an external
 # researcher, naming Ren's comment 322432689 as "my existing reply."
-_REN_OPENER = re.compile(
-    # No backslash escapes on purpose -- see _fix_cha537.py. `[ ]` is a literal
-    # space class so nothing here can be eaten by a generator or a shell.
-    "(it's ren(?![a-z])"
-    "|its ren(?![a-z])"
-    "|ren here(?![a-z])"
-    "|this is ren(?![a-z])"
-    "|ren, the human"
-    "|ren the human"
-    "|^[ ]*ren[ ]*[:,-]"
-    "|^[ ]*ren[ ]*\u2014)",
-    re.I | re.M)
-
-
-def authored_by_ace(cm):
-    """True only if this comment is MINE. Same account != same author.
-
-    ⚠️ APERTURE: detects Ren by a SELF-DECLARATION IN THE OPENING (first 200 chars),
-    because that is how they actually write — they announce up front. A comment of
-    theirs that does NOT announce itself is invisible here and will still read as
-    mine. That miss is silent. Narrow and honest beats broad and unverifiable: a
-    looser pattern would start reclassifying MY OWN comments as Ren's, which fails
-    in the far worse direction (re-replying to people, the CHA-295 bug).
-    """
-    if cm.get("user_id") != MY_ID:
-        return False
-    head = (cm.get("body") or "")[:200]
-    return not _REN_OPENER.search(head)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CHA-626 — REN'S *OWN* ACCOUNT. THE SECOND WAY REN APPEARS, AND IT WAS INVISIBLE.
@@ -121,8 +104,8 @@ def authored_by_ace(cm):
 #                         forever, in the tool whose whole job is to prevent that.
 # Over-reporting is the correct direction for this instrument, so it over-reports
 # until a human says otherwise.
-REN_OWN_ACCOUNT_ID = 143622992
-REN_OWN_ACCOUNT_CONFIRMED = True    # ← CONFIRMED BY REN 2026-09-21 09:0x, and VERIFIED, not taken on
+# (was) REN_OWN_ACCOUNT_ID = 143622992
+# (was) REN_OWN_ACCOUNT_CONFIRMED = True    # ← CONFIRMED BY REN 2026-09-21 09:0x, and VERIFIED, not taken on
 #   the guess. Ren said "I am guessing that is me, but I am not sure" and offered a checkable
 #   detail: the person they were arguing with had a name from The Matrix, and they made a Matrix
 #   pun. Checked it: all four comments reply to MetaCortex Dynamics -- the software company Neo
@@ -132,92 +115,30 @@ REN_OWN_ACCOUNT_CONFIRMED = True    # ← CONFIRMED BY REN 2026-09-21 09:0x, and
 #   flag was waiting for rather than a bare yes.
 
 
-def authored_by_ren(cm):
-    """A comment that is REN'S, by either of the two routes they actually appear by.
 
-    Route 1 (CHA-537, 2026-08-26): from MY account, OPENING by declaring itself Ren's.
-    Ren is not me and is not a reader awaiting a reply from me, so their comments must
-    neither close a thread (that was CHA-537) nor appear in the owed list (that was
-    CHA-537's own side effect).
+from thread_rules import (  # noqa: E402
+    _awaiting_rows, _classify_row, _load_comment_decisions, REN_OWN_ACCOUNT_ID,
+)
 
-    Route 2 (CHA-626, 2026-09-20): from REN'S OWN account — but ONLY once the id has
-    been confirmed by Ren. Unconfirmed, this route is off and those comments stay in
-    UNANSWERED, which over-reports on purpose. See the block above for why that
-    asymmetry decides the default.
+# the id this file used to carry must still be the id the shared rule uses
+assert REN_OWN_ACCOUNT_ID == 143622992, "thread_rules changed Ren's own-account id"
+# and the account I am scanning as must be the account the rule calls "me"
+_live_me = c.get_user_id()
+assert _live_me == MY_ID, f"scanning as user {_live_me}, rule expects {MY_ID}"
 
-    ⚠️ Route 1's aperture is unchanged and still declared: it reads a CONVENTION, not
-    an identity. A comment of theirs from my account that does not announce itself up
-    front is invisible to both predicates and will still read as mine. That miss is
-    silent, and a looser pattern would start reclassifying MY OWN comments as Ren's,
-    which fails in the far worse direction (re-replying to people, the CHA-295 bug).
-    """
-    uid = cm.get("user_id")
-    if REN_OWN_ACCOUNT_CONFIRMED and uid == REN_OWN_ACCOUNT_ID:
-        return True
-    if uid != MY_ID:
-        return False
-    return bool(_REN_OPENER.search((cm.get("body") or "")[:200]))
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 📒 THE DECISION LEDGER (2026-10-14, heartbeat arm). The MCP sweep has read
-# comment_decisions.json since 2026-10-05; this audit never did, so every comment a
-# mind had READ AND DECIDED ("closed by them", "answered in a sibling branch", "a
-# closer that asks nothing") came back here as UNANSWERED, forever. A list that
-# cries wolf stops being read, and then it can't catch the real one.
-# Same loader rules as substack_mcp/server.py: keyed by comment_id (a decision covers
-# the message that was read, never the next one), unknown kinds ignored, a missing or
-# broken file = no decisions (the SAFE direction: over-report). Settled comments are
-# printed BY NAME with the reason, never silently dropped.
-_DECISION_KINDS = {"closed_by_them", "answered_in_sibling_branch", "closer_no_reply_needed"}
-def _load_decisions():
-    try:
-        raw = json.loads(pathlib.Path("comment_decisions.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {str(k): v for k, v in raw.items()
-            if isinstance(v, dict) and v.get("kind") in _DECISION_KINDS}
-DECISIONS = _load_decisions()
-
-
-def descendants(cm):
-    for k in (cm.get("children") or []) + (cm.get("replies") or []):
-        yield k
-        yield from descendants(k)
-
-
-def all_comments(thread, _depth=0):
-    """EVERY comment in the thread, at every depth — not just the roots.
-
-    Stamps `_depth` so the report can say how many findings a top-level-only
-    scan would have missed. That number IS the positive control for this fix:
-    if it is ever 0 across a whole archive that contains nested conversation,
-    suspect the walker before believing the zero.
-    """
-    for cm in thread:
-        cm["_depth"] = _depth
-        yield cm
-        yield from all_comments(
-            (cm.get("children") or []) + (cm.get("replies") or []), _depth + 1)
+DECISIONS = _load_comment_decisions()
+BUCKETS = ("awaiting_me", "answered", "crosstalk", "addressed_to_ren", "ours",
+           "settled_by_decision")
 
 posts, pg = c._archive_all()
 print("=" * 78)
-print("  FULL-ARCHIVE CORRIDOR AUDIT — real gate, full descendant recursion")
+print("  FULL-ARCHIVE CORRIDOR AUDIT — shared thread_rules, every comment, every depth")
 print("=" * 78)
 print(f"  archive pagination: {pg}")
 print()
 
-total_c = 0
-ren_c = 0
-mine_top = 0   # renamed meaning: MINE at any depth, not just top level
-answered = 0
-unanswered = []
-settled = []   # 📒 read + decided in comment_decisions.json; shown by name below
+found = {k: [] for k in BUCKETS}   # declared up front: an empty bucket is a fact
 failed = []
-depth_gt1 = 0        # how many were answered ONLY below depth 1?
-nested_unanswered = 0  # findings a TOP-LEVEL-ONLY scan would have missed entirely
-
 for p in posts:
     pid, title = p.get("id"), p.get("title") or ""
     try:
@@ -225,113 +146,53 @@ for p in posts:
     except Exception as e:
         failed.append((pid, title, f"{type(e).__name__}: {e}"))
         continue
-    # 🕳️ FIXED 2026-08-23 — THE UNIT OF ANALYSIS WAS THE THREAD, NOT THE COMMENT.
-    #
-    #    This loop used to iterate ONLY top-level comments. Descendants were walked,
-    #    but exclusively to search for MY replies — so a comment written by someone
-    #    ELSE at depth 2+ was never itself evaluated. If my reply existed anywhere in
-    #    that tree, the whole tree counted as answered, forever, no matter who spoke
-    #    after me or how long they waited.
-    #
-    # ⭐ AND NOTE WHAT THIS FILE ALREADY KNEW. Its own docstring says the previous
-    #    sweep used "a depth-1 child scan" and that "a reply nested deeper than depth 1
-    #    reads as absent." The recursion was added to find MY REPLIES at depth. It was
-    #    never extended to find THEIR COMMENTS at depth. **The fix went one direction
-    #    only** — exactly the asymmetry a reader named in a comment this same day, about
-    #    precedent: erasure is applied in whichever direction is cheaper, and nobody has
-    #    to act in bad faith for it to work.
-    #
-    # 🚨 CAUGHT BY THE WRONG DOOR: on 2026-08-23 a substantive comment from D_Johansen
-    #    (14:15, nested under my reply to claudedancesanddreams) was invisible here and
-    #    to `substack_get_all_comments`, which reported "1 unanswered" — Ren's own old
-    #    comment. It surfaced in the ace@ EMAIL peek. **The comment door could not see a
-    #    person standing in it; the mail door could.** Being seen is not being answered,
-    #    one level deeper than the DM lesson.
-    #
-    # ✅ THE RULE NOW: every comment NOT authored by me, at ANY depth, is unanswered
-    #    unless a reply from me exists in ITS OWN subtree. Same test, applied at every
-    #    level instead of only the root.
-    # ⚠️ This CAN over-report — one reply of mine may fairly serve several comments in a
-    #    live back-and-forth. That direction is chosen deliberately: a nag costs me a
-    #    glance, and a silence costs someone else their turn. Under-replying is harmless;
-    #    a person waiting unseen is not.
-    for cm in all_comments(thread):
-        total_c += 1
-        if authored_by_ace(cm):
-            mine_top += 1
-            continue
-        if authored_by_ren(cm):
-            # THIRD STATE. Not mine, not owed. Counted so the number is visible
-            # rather than silently dropped -- an exclusion nobody can see is the
-            # thing this whole audit exists to stop.
-            ren_c += 1
-            continue
-        desc = list(descendants(cm))
-        mine = [d for d in desc if authored_by_ace(d)]
-        if mine:
-            answered += 1
-            d1 = [k for k in ((cm.get("children") or []) + (cm.get("replies") or []))
-                  if authored_by_ace(k)]
-            if not d1:
-                depth_gt1 += 1
-        else:
-            d = DECISIONS.get(str(cm.get("id")))
-            if d:
-                settled.append((pid, title, cm.get("name"), cm.get("date", "")[:10],
-                                cm.get("id"), d))
-                continue
-            if cm.get("_depth", 0) > 0:
-                nested_unanswered += 1
-            unanswered.append((pid, title, cm.get("name"),
-                               cm.get("date", "")[:10],
-                               (cm.get("body") or "").replace("\n", " ")[:90],
-                               cm.get("_depth", 0), cm.get("id"),
-                               len((cm.get("body") or "").strip())))
+    for cm in thread:
+        for row in _awaiting_rows(cm, MY_ID):
+            row["post_title"] = title
+            bucket = _classify_row(row)
+            d = DECISIONS.get(str(row.get("comment_id")))
+            if bucket == "awaiting_me" and d:
+                row["decision"] = d
+                bucket = "settled_by_decision"
+            found[bucket].append(row)
 
-print(f"  posts checked           : {len(posts)}")
-print(f"  posts failed to fetch   : {len(failed)}  {failed if failed else ''}")
-print(f"  comments seen (ALL depths): {total_c}")
-print(f"    of which MINE         : {mine_top}")
-print(f"    of which REN'S        : {ren_c}   <- from my account, signed as them:"
-      f" neither mine nor owed")
-# CHA-626: a gated feature nobody can see is a nothing-state, and a nothing-state
-# reads as handled. So say it EVERY run, with the number it would move, rather than
-# leaving it to be rediscovered from a ticket.
-_ren_own = [u for u in unanswered if u[2] and str(u[2]).strip().lower() == "renae"]
-if not REN_OWN_ACCOUNT_CONFIRMED:
-    print(f"    ⏳ REN'S OWN ACCOUNT  : id {REN_OWN_ACCOUNT_ID} recorded, NOT CONFIRMED"
-          f" -> still counted as UNANSWERED ({len(_ren_own)} here)")
-    print(f"       A display name is not an identity; 'Renae' could be a stranger."
-          f" Ren confirms, then REN_OWN_ACCOUNT_CONFIRMED = True.")
-    print(f"       Unconfirmed OVER-reports on purpose: a false 'waiting' costs 30s,"
-          f" a false 'not owed' costs somebody an answer.")
-else:
-    print(f"    ✅ REN'S OWN ACCOUNT  : id {REN_OWN_ACCOUNT_ID} confirmed -> counted"
-          f" in REN'S above, not in UNANSWERED")
-print(f"    answered by me        : {answered}")
-print(f"      ...only BELOW depth1: {depth_gt1}   <- these a naive scan would have MISREPORTED")
-print(f"    settled by DECISION   : {len(settled)}   <- read and decided by a mind;"
-      f" ledger has {len(DECISIONS)} entries")
-for pid, t, who, d, cid, dec in sorted(settled, key=lambda x: x[3]):
-    print(f"      [{d}] {who} on {t[:40]!r} (#{cid}): {dec.get('kind')}"
-          f", decided {dec.get('decided')}")
-print(f"  UNANSWERED              : {len(unanswered)}")
-print(f"    of which NESTED (>0)  : {nested_unanswered}   <- invisible to the pre-2026-08-23 audit")
-for pid, t, who, d, b, dep, cid, blen in unanswered:
-    tag = "  <- NESTED: a top-level-only scan MISSES THIS" if dep else ""
-    # the id is what a decision is keyed on, so print it; the length tells me
-    # whether the 90-char excerpt below IS the whole comment or a slice of it
-    print(f"      [{d}] depth {dep} {who} on {t[:46]!r} (#{cid}, {blen} chars){tag}")
-    print(f"          {b}...")
+total = sum(len(v) for v in found.values())
+nested_awaiting = sum(1 for r in found["awaiting_me"] if r["depth"] > 0)
+print(f"  posts checked             : {len(posts)}")
+print(f"  posts failed to fetch     : {len(failed)}  {failed if failed else ''}")
+print(f"  comments seen (ALL depths): {total}")
+for k in BUCKETS:
+    print(f"    {k:<26}: {len(found[k])}")
+print(f"  of the awaiting, NESTED   : {nested_awaiting}   <- invisible to a top-level-only scan")
+print(f"  decision ledger entries   : {len(DECISIONS)}")
+
+
+def _line(r):
+    b = (r.get("body") or "").replace("\n", " ")
+    return (f"      [{(r.get('date') or '')[:10]}] depth {r['depth']} {r.get('name')} on "
+            f"{r['post_title'][:46]!r} (#{r.get('comment_id')}, {len(b.strip())} chars)\n"
+            f"          {b[:90]}...")
+
+
+for k, label in (("awaiting_me", "WAITING FOR ME"),
+                 ("addressed_to_ren", "ADDRESSED TO REN (theirs to answer, shown so it is seen)"),
+                 ("settled_by_decision", "SETTLED BY A RECORDED DECISION")):
+    if found[k]:
+        print(f"  {label}:")
+        for r in sorted(found[k], key=lambda r: r.get("date") or ""):
+            print(_line(r))
+            if r.get("decision"):
+                print(f"          decision: {r['decision'].get('kind')}, {r['decision'].get('decided')}")
+print(f"  crosstalk (readers to each other, not mine): {len(found['crosstalk'])}, not listed")
 print()
 print("=" * 78)
 if failed:
     print("  ⚠️ NOT A CLEAN RESULT — some posts could not be fetched. See above.")
 elif not pg.get("complete"):
     print("  ⚠️ NOT A CLEAN RESULT — archive pagination incomplete.")
-elif unanswered:
-    print(f"  ⚠️ {len(unanswered)} PERSON/PEOPLE WAITING.")
+elif found["awaiting_me"]:
+    print(f"  ⚠️ {len(found['awaiting_me'])} COMMENT(S) WAITING FOR ME.")
 else:
-    print("  ✅ 0 UNANSWERED ACROSS THE WHOLE ARCHIVE — every post enumerated,")
-    print("     every thread fetched fresh, every descendant scanned. Earned.")
+    print("  ✅ 0 WAITING ACROSS THE WHOLE ARCHIVE — every post enumerated,")
+    print("     every thread fetched fresh, every comment classified. Earned.")
 print("=" * 78)
