@@ -46,6 +46,11 @@ except (AttributeError, ValueError):
 _HERE = Path(__file__).resolve()
 _WATCHED = [_HERE, _HERE.parent.parent / "substack_client.py", _HERE.parent.parent / "thread_rules.py"]
 _LOADED_MTIMES = {p: (p.stat().st_mtime if p.exists() else None) for p in _WATCHED}
+# 🏷️ 2026-10-18: the warning used to print the FILE's mtime-at-load as "this process loaded <date>",
+# which reads as a launch time. It isn't one: on 10-18 it said "loaded 2026-10-08" for a process
+# started after Ren's 10-14 restart (server.py simply hadn't been edited between 10-08 and launch).
+# I believed the label over Ren and went hunting a cause that wasn't there. Both numbers now, named.
+_PROCESS_STARTED = datetime.now()
 
 
 def _stale_code_warning() -> Optional[str]:
@@ -57,11 +62,13 @@ def _stale_code_warning() -> Optional[str]:
         except OSError:
             continue
         if loaded is not None and now > loaded + 1:
-            newer.append(f"{p.name} (edited {datetime.fromtimestamp(now):%Y-%m-%d %H:%M}, "
-                         f"this process loaded {datetime.fromtimestamp(loaded):%Y-%m-%d %H:%M})")
+            newer.append(f"{p.name} (edited on disk {datetime.fromtimestamp(now):%Y-%m-%d %H:%M}; "
+                         f"this process is running the copy last edited "
+                         f"{datetime.fromtimestamp(loaded):%Y-%m-%d %H:%M})")
     if not newer:
         return None
-    return ("⚠️ STALE SERVER: this MCP process is running OLDER code than disk: "
+    return ("⚠️ STALE SERVER: this MCP process (started "
+            + f"{_PROCESS_STARTED:%Y-%m-%d %H:%M}) is running OLDER code than disk: "
             + "; ".join(newer)
             + ". Results below come from the old code. Restart Claude Code (or /mcp reconnect) "
               "before trusting an empty or surprising answer. (CHA-448)")
