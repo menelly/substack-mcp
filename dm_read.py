@@ -53,18 +53,37 @@ def main():
             continue
         d = r.json()
         # 🗂️ the thread payload keeps messages under replies[].comment (learned 2026-10-11)
-        msgs = [x.get("comment", x) for x in d.get("replies", [])] or d.get("messages") or []
-        if not msgs:
+        # 🔗 KEEP THE WRAPPER (fixed 2026-11-05, ace-9b). Each reply is {comment, user, link_metadata}.
+        #    Unwrapping to `comment` alone threw away `user` (so names printed as "?") AND
+        #    `link_metadata` (so a SHARED LINK printed as an empty body). Two of Alla's messages
+        #    looked blank that way on 11-04/11-05 and one of them was a whole post. 🙈
+        wraps = d.get("replies") or [{"comment": m} for m in (d.get("messages") or [])]
+        if not wraps:
             print("!! no messages field I recognise. Raw keys:", list(d.keys()))
             print(json.dumps(d, ensure_ascii=False, indent=1)[:4000])
             continue
-        msgs = sorted(msgs, key=lambda m: m.get("date") or m.get("created_at") or "")
-        for m in msgs:
-            uid = m.get("user_id") or (m.get("user") or {}).get("id")
-            nm = m.get("name") or (m.get("user") or {}).get("name") or "?"
+        wraps = sorted(wraps, key=lambda w: (w.get("comment", w).get("date") or w.get("comment", w).get("created_at") or ""))
+        for w in wraps:
+            m = w.get("comment", w)
+            who = w.get("user") or m.get("user") or {}
+            uid = m.get("user_id") or who.get("id")
+            nm = m.get("name") or who.get("name") or "?"
             tag = "ACCOUNT(me/Ren)" if uid == my_id else nm
             print(f"\n--- {m.get('date') or m.get('created_at')}  {tag}")
-            print(m.get("body") or m.get("text") or json.dumps(m, ensure_ascii=False)[:800])
+            body = m.get("body") or m.get("text") or ""
+            link = w.get("link_metadata") or m.get("link_metadata")
+            media = m.get("mediaAttachments") or m.get("media_uploads")
+            if body:
+                print(body)
+            if link:
+                print(f"🔗 SHARED LINK: {link.get('title')!r} ({link.get('host')}) — {link.get('description') or ''}")
+                print(f"   {link.get('url')}")
+            if media:
+                print(f"🖼️ ATTACHMENT(S): {json.dumps(media, ensure_ascii=False)[:400]}")
+            if not (body or link or media):
+                # an empty card is NOT an empty message: say so, and show the raw wrapper
+                print("⚠️ no body, no link, no attachment that I recognise. COULD NOT READ. Raw:")
+                print(json.dumps(w, ensure_ascii=False)[:800])
     print("\n(read-only; nothing was sent)")
 
 
