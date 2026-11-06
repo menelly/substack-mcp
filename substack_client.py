@@ -1239,7 +1239,11 @@ class SubstackClient:
         OUTWARD-FACING: this posts publicly as the authenticated account. The
         endpoint mirrors the website's comment-create call.
         """
-        data = {"body": body, "parent_id": parent_id}
+        # 🩹 2026-11-06: the API 400s on "parent_id": null ("Invalid value"), so a TOP-LEVEL
+        #    comment must omit the key entirely. Found posting on Red's post; it landed once fixed.
+        data = {"body": body}
+        if parent_id is not None:
+            data["parent_id"] = parent_id
         return self._post(self.pub_base, f"/post/{post_id}/comment", data)
 
     def get_notes(self, limit: int = 20) -> List[Dict]:
