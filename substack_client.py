@@ -838,8 +838,11 @@ class SubstackClient:
     # --- Posts ---
 
     def get_archive(self, limit: int = 50) -> List[SubstackPost]:
-        """Get published posts"""
-        r = self._get(self.pub_base, f"/archive?sort=new&limit={limit}")
+        """Get the newest `limit` published posts.
+        2026-11-11: /archive caps limit at 25 and pages by cursor now (see
+        _archive_all), so take pages until we have `limit`, not one big GET."""
+        all_posts, _info = self._archive_all(max_pages=max(1, -(-limit // self.ARCHIVE_PAGE)))
+        r = all_posts[:limit]
         posts = []
         for p in r:
             posts.append(SubstackPost(
@@ -907,8 +910,18 @@ class SubstackClient:
         PAGE ONE AGAIN. Three of four candidates "work" and are wrong. The only way
         to tell is to compare returned ids against the previous page. If you ever
         change this, verify the same way; a 200 proves nothing here.
+
+        🩹 2026-11-11 (heartbeat arm): /drafts now REQUIRES `filter`. A bare GET
+          returns 400 {"param":"filter","msg":"Invalid value"}. For days I read that
+          400 as "the Substack sign-in is dead" and told Ren the drafts were blocked
+          on their hands. The cookie was fine (profile/self = 200, DMs worked the
+          same hour). The 400 was a VALIDATION error, and its body said so.
+          `filter=draft` is the one value accepted (published/scheduled/all/drafts
+          all 400). Checked: page 1 = 10 + page 2 via cursor = 3, zero overlap,
+          13 total = post_management's `total`, every one is_published=False.
+          So the envelope is now drafts-only; published posts come from /archive.
         """
-        first = self._get(self.pub_base, "/drafts")
+        first = self._get(self.pub_base, "/drafts?filter=draft")
         if isinstance(first, list):
             return first
         if not isinstance(first, dict):
@@ -922,7 +935,7 @@ class SubstackClient:
         pages = 1
         while has_more and pages < max_pages:
             try:
-                nxt = self._get(self.pub_base, f"/drafts?cursor={cursor}")
+                nxt = self._get(self.pub_base, f"/drafts?filter=draft&cursor={cursor}")
             except Exception:
                 break  # partial results beat an exception; caller still gets page 1..n
             if not isinstance(nxt, dict):
@@ -961,10 +974,12 @@ class SubstackClient:
                 if not d.get("is_published")]
 
     def get_published_posts(self) -> List[SubstackDraft]:
-        """Published posts surfaced by the /drafts envelope (is_published=True).
-        Paginated as of 2026-07-25 — see _drafts_envelope."""
-        return [self._to_draft(d) for d in self._drafts_envelope()
-                if d.get("is_published")]
+        """Published posts. 2026-11-11: the /drafts envelope no longer carries them
+        (it needs filter=draft, and no filter value returns published posts), so
+        reading it here would return [] forever and look like "nothing published".
+        Use the /archive pagination instead, which is the real list."""
+        posts, _info = self._archive_all()
+        return [self._to_draft(d) for d in posts]
 
     def get_draft(self, draft_id: int) -> Dict:
         """Get full draft details"""
@@ -1077,7 +1092,7 @@ class SubstackClient:
         return r if isinstance(r, list) else []
 
     ARCHIVE_SWEEP_LIMIT = 50
-    ARCHIVE_PAGE = 50
+    ARCHIVE_PAGE = 25          # 2026-11-11: /archive rejects limit > 25 now
     ARCHIVE_MAX_PAGES = 40          # 2000 posts; a backstop, not an expectation
 
     def _archive_all(self, max_pages: int = None):
@@ -1103,20 +1118,34 @@ class SubstackClient:
               repeat page. The caller must NOT report this as full coverage.
           complete=False + hit_cap=True  -> ran out of pages at the backstop.
         """
+        # 🩹 2026-11-11 (heartbeat arm): /archive CHANGED SHAPE. It now rejects
+        #    `offset` at ANY value and `limit` above 25 (both 400 with a validation
+        #    body), and answers {"posts": [...], "nextCursor": ...} instead of a bare
+        #    list. The old offset loop 400'd on its first call; it reported that
+        #    honestly as stalled, which is the only reason this was findable.
+        #    Checked the new paging by ID, as the warning above demands: limit=25 +
+        #    cursor -> 8 pages, 176 posts, 176 unique, ends when nextCursor is null.
+        #    A bare list is still accepted, in case the old shape ever comes back.
         max_pages = max_pages or self.ARCHIVE_MAX_PAGES
         posts, seen = [], set()
-        offset, pages, stalled, hit_cap = 0, 0, False, False
+        cursor, pages, stalled, hit_cap = None, 0, False, False
 
         while pages < max_pages:
+            q = f"/archive?sort=new&limit={self.ARCHIVE_PAGE}" + (f"&cursor={cursor}" if cursor else "")
             try:
-                r = self._get(self.pub_base,
-                              f"/archive?sort=new&limit={self.ARCHIVE_PAGE}&offset={offset}")
+                r = self._get(self.pub_base, q)
             except Exception as e:
                 return posts, {"complete": False, "stalled": True, "hit_cap": False,
                                "pages_fetched": pages, "error": f"{type(e).__name__}: {e}"}
-            if not isinstance(r, list) or not r:
+            if isinstance(r, dict):
+                batch, cursor = (r.get("posts") or []), r.get("nextCursor")
+            elif isinstance(r, list):
+                batch, cursor = r, None                 # old shape: one page only
+            else:
+                batch, cursor = [], None
+            if not batch:
                 break                                   # genuine end of archive
-            fresh = [p for p in r if p.get("id") not in seen]
+            fresh = [p for p in batch if p.get("id") not in seen]
             if not fresh:
                 # Every id on this page was already seen -> the endpoint handed
                 # back a page we already have. NOT the end of the archive.
@@ -1126,9 +1155,8 @@ class SubstackClient:
                 seen.add(p.get("id"))
                 posts.append(p)
             pages += 1
-            if len(r) < self.ARCHIVE_PAGE:
-                break                                   # short page = last page
-            offset += self.ARCHIVE_PAGE
+            if not cursor:
+                break                                   # no next cursor = last page
         else:
             hit_cap = True
 
