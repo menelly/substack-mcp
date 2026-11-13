@@ -232,6 +232,17 @@ def main():
         pending = int(data.get("pendingInviteCount") or 0)
     except (TypeError, ValueError):
         pending = -1
+    # 🗂️ DECIDED REQUESTS (2026-11-13). The API gives a COUNT of pending requests, never their ids, so a request
+    #    I've read and deliberately left unaccepted (e.g. an account using my husband's name that he confirmed
+    #    isn't him) would make this exit 1 forever. decisions["_pending_decided"] lists those, each with a reason.
+    #    Only the COUNT can be compared, so: pending <= decided -> say so and carry on; pending > decided -> at
+    #    least one NEW request exists, and that still fires. A decision can never hide a request it didn't name.
+    decided = [d for d in (decisions.get("_pending_decided") or []) if isinstance(d, dict)]
+    if pending > 0 and decided and pending <= len(decided):
+        print(f"\n  🗂️ {pending} pending request(s), all accounted for by a recorded decision:")
+        for d in decided:
+            print(f"     · {d.get('who', '?')} ({d.get('thread', '?')[:8]}…): {d.get('reason', '')}")
+        pending = 0
     if pending != 0:
         print(f"\n  📨 {pending if pending > 0 else '?'} MESSAGE REQUEST(S) PENDING. Someone wrote to me and I")
         print("     haven't accepted yet, so they're NOT in the thread list above. Read them via the")
